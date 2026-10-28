@@ -9066,12 +9066,16 @@ class Router:
 
             verbose_router_logger.debug("Retrying request with num_retries: %s", num_retries)
             # decides how long to sleep before retry
-            retry_after: Final = 0 if not retry_same_deployment else self._time_to_sleep_before_retry(
-                e=original_exception,
-                remaining_retries=num_retries,
-                num_retries=num_retries,
-                healthy_deployments=_healthy_deployments,
-                all_deployments=_all_deployments,
+            retry_after: Final = (
+                0
+                if not retry_same_deployment
+                else self._time_to_sleep_before_retry(
+                    e=original_exception,
+                    remaining_retries=num_retries,
+                    num_retries=num_retries,
+                    healthy_deployments=_healthy_deployments,
+                    all_deployments=_all_deployments,
+                )
             )
 
             await asyncio.sleep(retry_after)
@@ -9141,12 +9145,16 @@ class Router:
                     )
                     if skipped_ids:
                         kwargs["_retry_skipped_deployment_ids"] = skipped_ids  # rebind-ok: the next attempt reads it
-                    _timeout = 0 if not retry_same_deployment else self._time_to_sleep_before_retry(
-                        e=e,
-                        remaining_retries=remaining_retries,
-                        num_retries=num_retries,
-                        healthy_deployments=_healthy_deployments,
-                        all_deployments=_all_deployments,
+                    _timeout = (
+                        0
+                        if not retry_same_deployment
+                        else self._time_to_sleep_before_retry(
+                            e=e,
+                            remaining_retries=remaining_retries,
+                            num_retries=num_retries,
+                            healthy_deployments=_healthy_deployments,
+                            all_deployments=_all_deployments,
+                        )
                     )
                     await asyncio.sleep(_timeout)
 
