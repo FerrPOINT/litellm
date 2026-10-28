@@ -5,8 +5,32 @@ import httpx
 import pytest
 from openai import APIStatusError
 
+from litellm.exceptions import RateLimitError
+from litellm.litellm_core_utils.exception_mapping_utils import exception_type
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.proxy.chatgpt_accounts.availability import classify_outage, next_attempt
 from litellm.proxy.chatgpt_accounts.models import AccountOutage, AccountRecord
+
+
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({"retry-after": "0"}, 1000),
+        ({"retry-after": "60"}, 1060),
+        ({"retry-after": "Thu, 01 Jan 1970 00:20:00 GMT"}, 1200),
+        ({"retry-after": "Thu, 01 Jan 1970 00:00:00 GMT"}, 0),
+        ({"x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": "2000"}, 2000),
+    ],
+)
+def test_mapped_provider_error_preserves_observed_recovery(headers: Mapping[str, str], expected: int) -> None:
+    with pytest.raises(RateLimitError) as caught:
+        exception_type(
+            model="fixture-model",
+            custom_llm_provider="chatgpt",
+            original_exception=BaseLLMException(429, "fixture rate limit", headers=dict(headers)),
+        )
+    outage = classify_outage(caught.value, 1000)
+    assert outage is not None and outage.retry_at == expected and outage.until == expected
 
 
 @pytest.mark.parametrize(

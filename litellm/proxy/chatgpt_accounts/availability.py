@@ -9,6 +9,7 @@ from openai import APIConnectionError, APIStatusError, AuthenticationError, Perm
 from pydantic import TypeAdapter
 
 from litellm.exceptions import ContentPolicyViolationError, PaymentRequiredError
+from litellm.litellm_core_utils.exception_mapping_utils import _get_response_headers
 
 from .models import AccountOutage, AccountRecord
 
@@ -42,8 +43,12 @@ def next_attempt(account: AccountRecord, now: float, model: str | None = None) -
 
 
 def retry_at(response: httpx.Response | None, now: float | None = None) -> float | None:
+    return _retry_after(response.headers if response is not None else None, now)
+
+
+def _retry_after(headers: httpx.Headers | None, now: float | None = None) -> float | None:
     value: Final = TypeAdapter[str | None](str | None).validate_python(
-        response.headers.get("retry-after") if response is not None else None
+        headers.get("retry-after") if headers is not None else None
     )
     if value is None:
         return None
@@ -82,15 +87,15 @@ def _error_body(exception: Exception, response: httpx.Response | None) -> Mappin
         return {}
 
 
-def _window_reset(response: httpx.Response | None, window: str) -> float | None:
-    if response is None:
+def _window_reset(headers: httpx.Headers | None, window: str) -> float | None:
+    if headers is None:
         return None
-    used: Final = _number(_HEADER.validate_python(response.headers.get(f"x-codex-{window}-used-percent")))
-    reset: Final = _number(_HEADER.validate_python(response.headers.get(f"x-codex-{window}-reset-at")))
+    used: Final = _number(_HEADER.validate_python(headers.get(f"x-codex-{window}-used-percent")))
+    reset: Final = _number(_HEADER.validate_python(headers.get(f"x-codex-{window}-reset-at")))
     return reset if used is not None and used >= 100 and reset is not None and reset > 0 else None
 
 
-def _quota_reset(response: httpx.Response | None, body: Mapping[str, object], now: float) -> float | None:
+def _quota_reset(headers: httpx.Headers | None, body: Mapping[str, object], now: float) -> float | None:
     absolute: Final = _number(body.get("resets_at"))
     seconds: Final = _number(body.get("resets_in_seconds"))
     payload: Final = (
@@ -102,7 +107,7 @@ def _quota_reset(response: httpx.Response | None, body: Mapping[str, object], no
     )
     known: Final = tuple(
         value
-        for value in (payload, _window_reset(response, "primary"), _window_reset(response, "secondary"))
+        for value in (payload, _window_reset(headers, "primary"), _window_reset(headers, "secondary"))
         if value is not None
     )
     return max(known) if known else None
@@ -112,6 +117,7 @@ def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
     if isinstance(exception, ContentPolicyViolationError):
         return None
     response: Final = exception.response if isinstance(exception, (APIStatusError, httpx.HTTPStatusError)) else None
+    headers: Final = _get_response_headers(exception)
     raw_status: Final = getattr(exception, "status_code", None)
     http_status: Final = (
         response.status_code if response is not None else raw_status if isinstance(raw_status, int) else None
@@ -130,7 +136,7 @@ def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
     body: Final = _error_body(exception, response)
     observed: Final = tuple(
         value
-        for value in (retry_at(response, now), _quota_reset(response, body, now) if status == 429 else None)
+        for value in (_retry_after(headers, now), _quota_reset(headers, body, now) if status == 429 else None)
         if value is not None
     )
     reset: Final = max(observed) if observed else None
@@ -150,12 +156,16 @@ def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
             status="error",
             code=f"provider_{status}",
             retry_at=reset,
-            until=reset or now + 600,
+            until=reset if reset is not None else now + 600,
             scope="account" if payment else "deployment",
         )
     if status == 429:
         return AccountOutage(
-            reason="quota", status="rate_limited", code="provider_429", retry_at=reset, until=reset or now + 600
+            reason="quota",
+            status="rate_limited",
+            code="provider_429",
+            retry_at=reset,
+            until=reset if reset is not None else now + 600,
         )
     if (
         status == 408
@@ -167,7 +177,7 @@ def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
             status="error",
             code=f"provider_{status}" if status else "connection_failed",
             retry_at=reset,
-            until=reset or now + 30,
+            until=reset if reset is not None else now + 30,
             scope="deployment",
         )
     return None

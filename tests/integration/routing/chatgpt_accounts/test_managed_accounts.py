@@ -561,6 +561,22 @@ def test_account_retry_after_does_not_delay_the_next_account(tmp_path: Path) -> 
         assert process.poll() is None and len(ids) == 2
 
 
+def test_recovered_account_is_used_after_the_working_account_fails_without_manual_check(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.retry_after = "0"
+        ScriptedUpstream.rejected_owners = frozenset({"account-A"})
+        first: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert first.status_code == 200, first.text
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        sticky: Final = client.post("/v1/responses", json={"model": "app-test", "input": "fixture"})
+        assert sticky.status_code == 200 and ScriptedUpstream.owners[-1] == "account-B"
+        ScriptedUpstream.rejected_owners = frozenset({"account-B"})
+        recovered: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert recovered.status_code == 200, recovered.text
+        assert ScriptedUpstream.owners[-2:] == ("account-B", "account-A")
+        assert process.poll() is None and len(ids) == 2
+
+
 def test_request_deadline_cancels_the_whole_chain(tmp_path: Path) -> None:
     with proxy(tmp_path, automatic=True, deadline=1) as (client, ids, process):
         response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "hold-stream"})
