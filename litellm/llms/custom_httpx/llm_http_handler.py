@@ -109,6 +109,7 @@ from litellm.llms.base_llm.vector_store_files.transformation import (
 )
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.llms.bedrock.base_aws_llm import SignsRequestsWithAWS, run_aws_signing, run_off_loop_if_aws
+from litellm.llms.chatgpt.recovery import apost_with_refresh, post_with_refresh, request_authenticator
 from litellm.llms.custom_httpx.container_handler import raise_for_error_status
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
@@ -519,6 +520,7 @@ _OPTIONAL_PARAMS: Final = TypeAdapter(Mapping[str, object])
 _JSON_OBJECT: Final = TypeAdapter(dict[str, object])
 _JSON_OBJECTS: Final = TypeAdapter(list[dict[str, object]])
 _DECODED_JSON: Final = TypeAdapter(object)
+_RESPONSE_HEADERS: Final = TypeAdapter(dict[object, object])
 
 
 def _decoded_body_headers(response: httpx.Response) -> httpx.Headers:
@@ -3000,6 +3002,7 @@ class BaseLLMHTTPHandler:
             fake_stream=fake_stream,
         )
         body_kwargs: Final = _signed_body_kwargs(signed_body=signed_body, data=data)
+        recovery_headers: Final = _RESPONSE_HEADERS.validate_python(headers)
 
         ## LOGGING
         logging_obj.pre_call(
@@ -3014,12 +3017,16 @@ class BaseLLMHTTPHandler:
 
         try:
             if is_stream_request:
-                response = sync_httpx_client.post(
-                    url=api_base,
-                    headers=headers,
-                    timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
-                    stream=stream,
-                    **body_kwargs,
+                response = post_with_refresh(
+                    lambda retry_headers: sync_httpx_client.post(
+                        url=api_base,
+                        headers=dict(retry_headers),
+                        timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
+                        stream=stream,
+                        **body_kwargs,
+                    ),
+                    recovery_headers,
+                    request_authenticator(custom_llm_provider, dict(litellm_params), recovery_headers),
                 )
                 if caller_requested_stream:
                     if fake_stream is True:
@@ -3046,11 +3053,15 @@ class BaseLLMHTTPHandler:
                     )
                 response.read()
             else:
-                response = sync_httpx_client.post(
-                    url=api_base,
-                    headers=headers,
-                    timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
-                    **body_kwargs,
+                response = post_with_refresh(
+                    lambda retry_headers: sync_httpx_client.post(
+                        url=api_base,
+                        headers=dict(retry_headers),
+                        timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
+                        **body_kwargs,
+                    ),
+                    recovery_headers,
+                    request_authenticator(custom_llm_provider, dict(litellm_params), recovery_headers),
                 )
         except Exception as e:
             raise self._handle_error(
@@ -3201,6 +3212,7 @@ class BaseLLMHTTPHandler:
             fake_stream=fake_stream,
         )
         body_kwargs: Final = _signed_body_kwargs(signed_body=signed_body, data=data)
+        recovery_headers: Final = _RESPONSE_HEADERS.validate_python(headers)
 
         ## LOGGING
         logging_obj.pre_call(
@@ -3215,13 +3227,17 @@ class BaseLLMHTTPHandler:
 
         try:
             if is_stream_request:
-                response = await async_httpx_client.post(
-                    url=api_base,
-                    headers=headers,
-                    timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
-                    stream=stream,
-                    logging_obj=logging_obj,
-                    **body_kwargs,
+                response = await apost_with_refresh(
+                    lambda retry_headers: async_httpx_client.post(
+                        url=api_base,
+                        headers=dict(retry_headers),
+                        timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
+                        stream=stream,
+                        logging_obj=logging_obj,
+                        **body_kwargs,
+                    ),
+                    recovery_headers,
+                    request_authenticator(custom_llm_provider, dict(litellm_params), recovery_headers),
                 )
 
                 if caller_requested_stream:
@@ -3249,12 +3265,16 @@ class BaseLLMHTTPHandler:
                     )
                 await response.aread()
             else:
-                response = await async_httpx_client.post(
-                    url=api_base,
-                    headers=headers,
-                    timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
-                    logging_obj=logging_obj,
-                    **body_kwargs,
+                response = await apost_with_refresh(
+                    lambda retry_headers: async_httpx_client.post(
+                        url=api_base,
+                        headers=dict(retry_headers),
+                        timeout=timeout or float(response_api_optional_request_params.get("timeout", 0)),
+                        logging_obj=logging_obj,
+                        **body_kwargs,
+                    ),
+                    recovery_headers,
+                    request_authenticator(custom_llm_provider, dict(litellm_params), recovery_headers),
                 )
 
         except Exception as e:

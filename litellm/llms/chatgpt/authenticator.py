@@ -1,16 +1,17 @@
 import json
 import os
+import tempfile
 import time
 from collections.abc import Mapping
 from functools import lru_cache
 from typing import TYPE_CHECKING, Final
 
 import httpx
+from filelock import FileLock
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from litellm._logging import verbose_logger
 from litellm.constants import HTTP_HANDLER_CONNECT_TIMEOUT_SECONDS
-from litellm.litellm_core_utils.asyncify import can_block_current_thread
 from litellm.litellm_core_utils.request_timeout_resolver import get_configured_request_timeout
 from litellm.llms.custom_httpx.http_handler import get_httpx_client
 
@@ -32,6 +33,8 @@ from .common_utils import (
 
 if TYPE_CHECKING:
     from litellm.types.router import GenericLiteLLMParams
+
+chatgpt_auth_logger: Final = verbose_logger.getChild("chatgpt_oauth")
 
 TOKEN_EXPIRY_SKEW_SECONDS: Final = 60
 TOKEN_REFRESH_TIMEOUT_SECONDS: Final = 30
@@ -88,38 +91,45 @@ class Authenticator:
 
     def get_access_token(self) -> str:
         auth_data: Final = self._read_auth_file()
-        if auth_data:
-            access_token: Final = _optional_str(auth_data.get("access_token"))
-            if access_token and not self._is_token_expired(auth_data, access_token):
-                return access_token
-            refresh_token: Final = _optional_str(auth_data.get("refresh_token"))
-            if refresh_token:
-                try:
-                    refreshed: Final = self._refresh_tokens(refresh_token)
-                    return refreshed["access_token"]
-                except RefreshAccessTokenError as exc:
-                    verbose_logger.warning("ChatGPT refresh token failed, re-login required: %s", exc)
+        access_token: Final = _optional_str(auth_data.get("access_token")) if auth_data else None
+        if access_token and auth_data and not self._is_token_expired(auth_data, access_token):
+            return access_token
+        return self.refresh_access_token(rejected_access_token=access_token)
 
-        if not can_block_current_thread():
-            raise GetAccessTokenError(
-                message=(
-                    "ChatGPT device-code login needs a human and cannot run inside a running event loop "
-                    "or a worker thread (for example the LiteLLM proxy). Log in once outside the proxy with "
-                    '`python -c "from litellm.llms.chatgpt.authenticator import Authenticator; '
-                    'Authenticator().get_access_token()"` and mount the resulting auth.json into the proxy, '
-                    "or set CHATGPT_TOKEN_DIR to a directory that already holds it."
-                ),
-                status_code=401,
-            )
+    def refresh_access_token(self, rejected_access_token: str | None = None) -> str:
+        self._ensure_token_dir()
+        with FileLock(f"{self.auth_file}.lock"):
+            latest: Final = self._read_auth_file()
+            current: Final = _optional_str(latest.get("access_token")) if latest else None
+            if current and latest and current != rejected_access_token and not self._is_token_expired(latest, current):
+                return current
+            refresh: Final = _optional_str(latest.get("refresh_token")) if latest else None
+            if not refresh:
+                raise GetAccessTokenError(
+                    message="ChatGPT account requires sign-in; device login cannot run in an event loop or worker thread. Use explicit administrator sign-in.",
+                    status_code=401,
+                )
+            chatgpt_auth_logger.info("ChatGPT OAuth refresh_started")
+            try:
+                refreshed: Final = self._refresh_tokens(refresh)
+            except (RefreshAccessTokenError, OSError) as exc:
+                chatgpt_auth_logger.warning("ChatGPT OAuth refresh_failed")
+                raise GetAccessTokenError(
+                    message="ChatGPT account requires sign-in; device login cannot run in an event loop or worker thread. Use explicit administrator sign-in.",
+                    status_code=503 if isinstance(exc, OSError) else 401,
+                ) from None
+            chatgpt_auth_logger.info("ChatGPT OAuth refresh_succeeded")
+            return refreshed["access_token"]
 
-        cooldown_remaining: Final = self._get_device_code_cooldown_remaining(auth_data)
-        if cooldown_remaining > 0:
-            token: Final = self._wait_for_access_token(cooldown_remaining)
-            if token:
-                return token
+    def is_saved_access_token(self, token: str) -> bool:
+        stored: Final = self._read_auth_file()
+        return stored is not None and stored.get("access_token") == token
 
-        tokens: Final = self._login_device_code()
-        return tokens["access_token"]
+    def save_tokens(self, tokens: Mapping[str, str]) -> None:
+        self._write_auth_file(self._build_auth_record(dict(tokens)))
+
+    def login(self) -> Mapping[str, str]:
+        return self._login_device_code()
 
     def get_account_id(self, access_token: str | None = None) -> str | None:
         auth_data: Final = self._read_auth_file()
@@ -133,13 +143,24 @@ class Authenticator:
         id_token: Final = auth_data.get("id_token")
         saved_access_token: Final = auth_data.get("access_token")
         derived: Final = extract_chatgpt_account_id(_optional_str(id_token or saved_access_token))
-        if derived:
-            self._write_auth_file({**auth_data, "account_id": derived})
-        return derived
+        if not derived:
+            return None
+        with FileLock(f"{self.auth_file}.lock"):
+            latest: Final = self._read_auth_file()
+            if latest is None:
+                return None
+            latest_id: Final = _optional_str(latest.get("account_id"))
+            if latest_id:
+                return latest_id
+            latest_token: Final = _optional_str(latest.get("id_token") or latest.get("access_token"))
+            latest_derived: Final = extract_chatgpt_account_id(latest_token)
+            if latest_derived:
+                self._write_auth_file({**latest, "account_id": latest_derived})
+            return latest_derived
 
     def _ensure_token_dir(self) -> None:
         if not os.path.exists(self.token_dir):
-            os.makedirs(self.token_dir, exist_ok=True)
+            os.makedirs(self.token_dir, mode=0o700, exist_ok=True)
 
     def _read_auth_file(self) -> JsonObject | None:
         try:
@@ -147,25 +168,30 @@ class Authenticator:
                 return _JSON_OBJECT_ADAPTER.validate_python(json.load(f))
         except OSError:
             return None
-        except (json.JSONDecodeError, ValidationError) as exc:
-            verbose_logger.warning("Invalid ChatGPT auth file: %s", exc)
+        except (json.JSONDecodeError, ValidationError):
+            verbose_logger.warning("Invalid ChatGPT auth file")
             return None
 
     def _write_auth_file(self, data: JsonObject) -> None:
+        self._ensure_token_dir()
+        if os.path.islink(self.auth_file):
+            raise OSError("Refusing symlinked ChatGPT credentials")
+        descriptor, candidate = tempfile.mkstemp(prefix=".auth.", dir=self.token_dir)
         try:
-            self._ensure_token_dir()
-            with open(self.auth_file, "w") as f:
-                json.dump(data, f)
-        except OSError as exc:
-            verbose_logger.error("Failed to write ChatGPT auth file: %s", exc)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(data, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(candidate, self.auth_file)
+        finally:
+            if os.path.exists(candidate):
+                os.unlink(candidate)
 
     def _is_token_expired(self, auth_data: JsonObject, access_token: str) -> bool:
         stored_expires_at: Final = auth_data.get("expires_at")
         if isinstance(stored_expires_at, (int, float)):
             return time.time() >= float(stored_expires_at) - TOKEN_EXPIRY_SKEW_SECONDS
         derived_expires_at: Final = self._get_expires_at(access_token)
-        if derived_expires_at:
-            self._write_auth_file({**auth_data, "expires_at": derived_expires_at})
         if derived_expires_at is None:
             return True
         return time.time() >= float(derived_expires_at) - TOKEN_EXPIRY_SKEW_SECONDS
@@ -223,7 +249,7 @@ class Authenticator:
         interval: Final = data.get("interval")
         if not device_auth_id or not user_code:
             raise GetDeviceCodeError(
-                message=f"Device code response missing fields: {data}",
+                message="ChatGPT device response is missing required fields",
                 status_code=400,
             )
         return {
@@ -301,12 +327,12 @@ class Authenticator:
             data: Final = _JSON_OBJECT_ADAPTER.validate_python(resp.json())
         except httpx.HTTPStatusError as exc:
             raise GetAccessTokenError(
-                message=f"Token exchange failed: {exc}",
+                message="ChatGPT token exchange failed",
                 status_code=exc.response.status_code,
             )
-        except Exception as exc:
+        except Exception:
             raise GetAccessTokenError(
-                message=f"Token exchange failed: {exc}",
+                message="ChatGPT token exchange failed",
                 status_code=400,
             )
 
@@ -315,7 +341,7 @@ class Authenticator:
         id_token: Final = _optional_str(data.get("id_token"))
         if not access_token or not refresh_token or not id_token:
             raise GetAccessTokenError(
-                message=f"Token exchange response missing fields: {data}",
+                message="ChatGPT token exchange response is missing required fields",
                 status_code=400,
             )
         return {
@@ -341,12 +367,12 @@ class Authenticator:
             data: Final = _JSON_OBJECT_ADAPTER.validate_python(resp.json())
         except httpx.HTTPStatusError as exc:
             raise RefreshAccessTokenError(
-                message=f"Refresh token failed: {exc}",
+                message="ChatGPT refresh failed",
                 status_code=exc.response.status_code,
             )
-        except Exception as exc:
+        except Exception:
             raise RefreshAccessTokenError(
-                message=f"Refresh token failed: {exc}",
+                message="ChatGPT refresh failed",
                 status_code=400,
             )
 
@@ -354,7 +380,7 @@ class Authenticator:
         id_token: Final = _optional_str(data.get("id_token"))
         if not access_token or not id_token:
             raise RefreshAccessTokenError(
-                message=f"Refresh response missing fields: {data}",
+                message="ChatGPT refresh response is missing required fields",
                 status_code=400,
             )
 
@@ -363,7 +389,8 @@ class Authenticator:
             "refresh_token": _optional_str(data.get("refresh_token")) or refresh_token,
             "id_token": id_token,
         }
-        account_id: Final = self.get_account_id()
+        previous: Final = self._read_auth_file()
+        account_id: Final = _optional_str(previous.get("account_id")) if previous else None
         auth_data: Final = self._build_auth_record(refreshed)
         self._write_auth_file({**auth_data, "account_id": account_id} if account_id else auth_data)
         return refreshed

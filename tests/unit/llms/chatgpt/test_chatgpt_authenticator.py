@@ -147,14 +147,14 @@ class TestChatGPTAuthenticator:
         mock_login.assert_not_called()
         mock_wait.assert_not_called()
 
-    def test_get_access_token_device_code_login_without_event_loop(self, authenticator):
+    def test_explicit_login_runs_device_code_flow_without_event_loop(self, authenticator):
         with (
             patch("builtins.open", side_effect=FileNotFoundError),
             patch.object(authenticator, "_login_device_code", return_value={"access_token": "tok"}),
         ):
-            token = authenticator.get_access_token()
+            tokens = authenticator.login()
 
-        assert token == "tok"
+        assert tokens["access_token"] == "tok"
 
     def test_get_account_id_from_id_token(self, authenticator):
         id_token = _make_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-123"}})

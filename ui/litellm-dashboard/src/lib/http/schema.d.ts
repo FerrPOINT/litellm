@@ -2393,6 +2393,156 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chatgpt/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Accounts */
+        get: operations["list_accounts_chatgpt_accounts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatgpt/accounts/bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Bindings */
+        put: operations["set_bindings_chatgpt_accounts_bindings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatgpt/accounts/logins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Login
+         * @description Start a pending ChatGPT device sign-in without changing current assignments.
+         */
+        post: operations["start_login_chatgpt_accounts_logins_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatgpt/accounts/logins/{login_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Login Status */
+        get: operations["login_status_chatgpt_accounts_logins__login_id__get"];
+        put?: never;
+        post?: never;
+        /** Cancel Login */
+        delete: operations["cancel_login_chatgpt_accounts_logins__login_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatgpt/accounts/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login Session
+         * @description Create a one-hour administrative cookie using the separate account management key.
+         */
+        post: operations["login_session_chatgpt_accounts_session_post"];
+        /** Logout Session */
+        delete: operations["logout_session_chatgpt_accounts_session_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatgpt/accounts/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Rename Account */
+        patch: operations["rename_account_chatgpt_accounts__account_id__patch"];
+        trace?: never;
+    };
+    "/chatgpt/accounts/{account_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Account
+         * @description Check the stored authorization and model access for one profile.
+         */
+        post: operations["check_account_chatgpt_accounts__account_id__check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatgpt/accounts/{account_id}/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disconnect Account
+         * @description Disable an unassigned profile while allowing in-flight requests to finish.
+         */
+        post: operations["disconnect_account_chatgpt_accounts__account_id__disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/claude-code/marketplace.json": {
         parameters: {
             query?: never;
@@ -25345,6 +25495,106 @@ export interface components {
                 [key: string]: string[];
             } | null;
         };
+        /** AccountBindings */
+        AccountBindings: {
+            /** Default Account Id */
+            default_account_id?: string | null;
+            /** Routes */
+            routes?: {
+                [key: string]: string | null;
+            };
+        };
+        /** AccountLoginRequest */
+        AccountLoginRequest: {
+            /** Account Id */
+            account_id?: string | null;
+            /** Label */
+            label: string;
+        };
+        /** AccountRecord */
+        AccountRecord: {
+            /** Client Id */
+            client_id: string;
+            /** Email */
+            email?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Error Code */
+            error_code?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Label */
+            label: string;
+            /** Last Checked At */
+            last_checked_at?: number | null;
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            /** Retry At */
+            retry_at?: number | null;
+            /**
+             * Status
+             * @default login_required
+             * @enum {string}
+             */
+            status: "ready" | "login_required" | "rate_limited" | "error" | "disabled";
+            /** Subject */
+            subject?: string | null;
+            /** Workspace */
+            workspace?: string | null;
+        };
+        /** AccountsState */
+        AccountsState: {
+            /**
+             * Accounts
+             * @default []
+             */
+            accounts: components["schemas"]["AccountRecord"][];
+            bindings?: components["schemas"]["AccountBindings"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+        };
+        /** AccountsView */
+        AccountsView: {
+            /**
+             * Accounts
+             * @default []
+             */
+            accounts: components["schemas"]["AccountRecord"][];
+            bindings?: components["schemas"]["AccountBindings"];
+            /** Quota Source */
+            quota_source?: string | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Routes */
+            routes: components["schemas"]["RouteView"][];
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+        };
         /**
          * AcknowledgedSafetyCheck
          * @description A pending safety check for the computer call.
@@ -25663,6 +25913,11 @@ export interface components {
              * @enum {string}
              */
             source: "admin";
+        };
+        /** AdminSession */
+        AdminSession: {
+            /** Expires At */
+            expires_at: number;
         };
         /**
          * AgentCapabilities
@@ -27347,6 +27602,12 @@ export interface components {
         BedrockChecksSensitiveInformationModel: {
             /** Entities */
             entities: components["schemas"]["BedrockChecksSensitiveInformationEntityItem"][];
+        };
+        /** BindingsRequest */
+        BindingsRequest: {
+            bindings: components["schemas"]["AccountBindings"];
+            /** Revision */
+            revision: number;
         };
         /** BlockKeyRequest */
         BlockKeyRequest: {
@@ -34032,6 +34293,11 @@ export interface components {
             /** Slope */
             slope: number;
         };
+        /** LabelRequest */
+        LabelRequest: {
+            /** Label */
+            label: string;
+        };
         /** LakeraCategoryThresholds */
         LakeraCategoryThresholds: {
             /** Jailbreak */
@@ -37449,6 +37715,38 @@ export interface components {
              */
             status?: "healthy" | "unhealthy";
         };
+        /** LoginRequest */
+        LoginRequest: {
+            /** Key */
+            key: string;
+        };
+        /** LoginView */
+        LoginView: {
+            /**
+             * Account Id
+             * Format: uuid
+             */
+            account_id: string;
+            /** Error Code */
+            error_code?: string | null;
+            /** Expires At */
+            expires_at: number;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Status
+             * @default pending
+             * @enum {string}
+             */
+            status: "pending" | "ready" | "failed" | "cancelled" | "expired";
+            /** User Code */
+            user_code: string;
+            /** Verification Url */
+            verification_url: string;
+        };
         /**
          * Logprob
          * @description The log probability of a token.
@@ -39688,6 +39986,8 @@ export interface components {
             /** User Role */
             user_role?: ("proxy_admin" | "proxy_admin_viewer" | "internal_user" | "internal_user_viewer") | null;
         };
+        /** NoOptions */
+        NoOptions: Record<string, never>;
         /** NoulAnswer */
         NoulAnswer: {
             /** Noul */
@@ -44484,6 +44784,15 @@ export interface components {
             roles?: {
                 [key: string]: string[];
             };
+        };
+        /** RouteView */
+        RouteView: {
+            /** Context Length */
+            context_length?: number | null;
+            /** Model */
+            model: string;
+            /** Name */
+            name: string;
         };
         /** RouterFieldsResponse */
         RouterFieldsResponse: {
@@ -54796,6 +55105,310 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_accounts_chatgpt_accounts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountsView"];
+                };
+            };
+        };
+    };
+    set_bindings_chatgpt_accounts_bindings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountsState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_login_chatgpt_accounts_logins_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountLoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_status_chatgpt_accounts_logins__login_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                login_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_login_chatgpt_accounts_logins__login_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                login_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_session_chatgpt_accounts_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSession"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_session_chatgpt_accounts_session_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rename_account_chatgpt_accounts__account_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LabelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_account_chatgpt_accounts__account_id__check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["NoOptions"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_account_chatgpt_accounts__account_id__disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["NoOptions"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountsState"];
                 };
             };
             /** @description Validation Error */
