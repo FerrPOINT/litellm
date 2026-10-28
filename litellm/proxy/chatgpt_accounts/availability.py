@@ -1,3 +1,4 @@
+import math
 import time
 from collections.abc import Mapping
 from email.utils import parsedate_to_datetime
@@ -12,6 +13,7 @@ from litellm.exceptions import ContentPolicyViolationError, PaymentRequiredError
 from .models import AccountOutage, AccountRecord
 
 _OBJECT_MAP: Final = TypeAdapter(Mapping[str, object])
+_HEADER: Final = TypeAdapter[str | None](str | None)
 
 
 def available(account: AccountRecord, now: float, model: str | None = None) -> bool:
@@ -53,6 +55,59 @@ def retry_at(response: httpx.Response | None, now: float | None = None) -> float
         return None
 
 
+def _number(value: object) -> float | None:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    try:
+        result: Final = float(value)
+        return result if math.isfinite(result) else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def _unwrap_error(document: Mapping[str, object]) -> Mapping[str, object]:
+    nested: Final = document.get("error")
+    return _OBJECT_MAP.validate_python(nested) if isinstance(nested, Mapping) else document
+
+
+def _error_body(exception: Exception, response: httpx.Response | None) -> Mapping[str, object]:
+    body: Final = getattr(exception, "body", None)
+    if isinstance(body, Mapping) and body:
+        return _unwrap_error(_OBJECT_MAP.validate_python(body))
+    if response is None:
+        return {}
+    try:
+        return _unwrap_error(_OBJECT_MAP.validate_json(response.content))
+    except (ValueError, httpx.ResponseNotRead):
+        return {}
+
+
+def _window_reset(response: httpx.Response | None, window: str) -> float | None:
+    if response is None:
+        return None
+    used: Final = _number(_HEADER.validate_python(response.headers.get(f"x-codex-{window}-used-percent")))
+    reset: Final = _number(_HEADER.validate_python(response.headers.get(f"x-codex-{window}-reset-at")))
+    return reset if used is not None and used >= 100 and reset is not None and reset > 0 else None
+
+
+def _quota_reset(response: httpx.Response | None, body: Mapping[str, object], now: float) -> float | None:
+    absolute: Final = _number(body.get("resets_at"))
+    seconds: Final = _number(body.get("resets_in_seconds"))
+    payload: Final = (
+        absolute
+        if absolute is not None and absolute > 0
+        else now + seconds
+        if seconds is not None and seconds >= 0
+        else None
+    )
+    known: Final = tuple(
+        value
+        for value in (payload, _window_reset(response, "primary"), _window_reset(response, "secondary"))
+        if value is not None
+    )
+    return max(known) if known else None
+
+
 def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
     if isinstance(exception, ContentPolicyViolationError):
         return None
@@ -72,16 +127,19 @@ def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
         if isinstance(exception, PermissionDeniedError)
         else http_status
     )
-    reset: Final = retry_at(response, now)
+    body: Final = _error_body(exception, response)
+    observed: Final = tuple(
+        value
+        for value in (retry_at(response, now), _quota_reset(response, body, now) if status == 429 else None)
+        if value is not None
+    )
+    reset: Final = max(observed) if observed else None
     if status == 401:
         return AccountOutage(
             reason="authentication", status="login_required", code="provider_401", retry_at=reset, until=None
         )
     if status in (402, 403):
-        body: Final = getattr(exception, "body", None)
-        object_body: Final = _OBJECT_MAP.validate_python(body) if isinstance(body, Mapping) else None
-        error: Final = object_body.get("error", object_body) if object_body is not None else None
-        code: Final = _OBJECT_MAP.validate_python(error).get("code") if isinstance(error, Mapping) else None
+        code: Final = body.get("code")
         payment: Final = status == 402 or code in (
             "insufficient_quota",
             "billing_hard_limit_reached",

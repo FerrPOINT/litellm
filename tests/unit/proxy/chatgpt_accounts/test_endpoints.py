@@ -39,6 +39,8 @@ async def test_inference_key_cannot_manage_accounts_and_session_rejects_csrf(ser
                 json={"revision": 0, "bindings": {}},
             )
             assert other_port.status_code == 403
+            cross_port_read: Final = await client.get("/chatgpt/accounts", headers={"origin": "http://pilot:4000"})
+            assert cross_port_read.status_code == 403
             signed_out: Final = await client.delete("/chatgpt/accounts/session")
             assert signed_out.status_code == 204
             expired: Final = await client.get("/chatgpt/accounts")

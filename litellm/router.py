@@ -614,6 +614,10 @@ _MODEL_INFO_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 _LITELLM_PARAMS_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 _SILENT_MODEL_ADAPTER: Final = TypeAdapter(str | list[str])
 _RESOLVED_RETRY_POLICY_ADAPTER: Final = TypeAdapter(RetryPolicy | None)
+_RETRY_MODEL_GROUP_ADAPTER: Final = TypeAdapter[str | None](str | None)
+_MODEL_GROUP_RETRY_POLICY_ADAPTER: Final = TypeAdapter[Mapping[str, RetryPolicy] | None](
+    Mapping[str, RetryPolicy] | None
+)
 _ROUTING_KWARGS_ADAPTER: Final[TypeAdapter[Mapping[str, object] | None]] = TypeAdapter(Mapping[str, object] | None)
 _FALLBACK_HOP_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 _REQUEST_KWARGS_ADAPTER: Final = TypeAdapter(Mapping[str, object])
@@ -8958,8 +8962,10 @@ class Router:
         context_window_fallbacks: Final = kwargs.pop("context_window_fallbacks", self.context_window_fallbacks)
         content_policy_fallbacks: Final = kwargs.pop("content_policy_fallbacks", self.content_policy_fallbacks)
         # Support per-request model_group_retry_policy override (from key/team settings)
-        model_group_retry_policy: Final = kwargs.pop("model_group_retry_policy", self.model_group_retry_policy)
-        model_group: Final[str | None] = kwargs.get("model")
+        model_group_retry_policy: Final = _MODEL_GROUP_RETRY_POLICY_ADAPTER.validate_python(
+            kwargs.pop("model_group_retry_policy", self.model_group_retry_policy)
+        )
+        model_group: Final = _RETRY_MODEL_GROUP_ADAPTER.validate_python(kwargs.get("model"))
         selected_retry_policy: Final = resolve_retry_policy(self.retry_policy, model_group, model_group_retry_policy)
         retry_same_deployment: Final = (
             selected_retry_policy.retry_same_deployment if selected_retry_policy is not None else True
@@ -9056,7 +9062,7 @@ class Router:
                 kwargs = self.log_retry(kwargs=kwargs, e=original_exception)
                 first_skipped_ids: Final = self._deployment_ids_to_skip_on_retry(
                     exception=original_exception,
-                    already_skipped=kwargs.get("_retry_skipped_deployment_ids"),
+                    already_skipped=_OPAQUE_VALUE_ADAPTER.validate_python(kwargs.get("_retry_skipped_deployment_ids")),
                     retry_same_deployment=retry_same_deployment,
                 )
                 if first_skipped_ids:
@@ -9140,7 +9146,9 @@ class Router:
 
                     skipped_ids = self._deployment_ids_to_skip_on_retry(
                         exception=e,
-                        already_skipped=kwargs.get("_retry_skipped_deployment_ids"),
+                        already_skipped=_OPAQUE_VALUE_ADAPTER.validate_python(
+                            kwargs.get("_retry_skipped_deployment_ids")
+                        ),
                         retry_same_deployment=retry_same_deployment,
                     )
                     if skipped_ids:

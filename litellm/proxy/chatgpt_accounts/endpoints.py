@@ -142,7 +142,7 @@ def require_admin(request: Request, value: Annotated[Controller, Depends(control
     except jwt.InvalidTokenError as exc:
         raise HTTPException(401, detail="Administrative session required") from exc
     origin: Final = request.headers.get("origin")
-    if request.method not in ("GET", "HEAD") and origin and origin != str(request.base_url).rstrip("/"):
+    if origin and origin != str(request.base_url).rstrip("/"):
         raise HTTPException(403, detail="Cross-origin account management is not allowed")
     return value
 

@@ -37,6 +37,8 @@ When enabled, a failed account is skipped and the working account remains select
 Each request attempts an account at most once and never uses another provider as a hidden fallback
 Quota and billing failures affect the account, while model access failures and transient errors affect its deployment
 An observed Retry-After controls recovery, with a local 600-second retry for unknown quota resets and 30 seconds for transient errors
+Quota reset timestamps from error payloads and exhausted Codex header windows are retained instead of replacing them with a local delay
+Header names follow the [Codex rate-limit parser](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/rate_limits.rs), checked on 2026-10-28
 A failed reserve does not prevent manually assigning a working account
 Invalid requests do not rotate, and a partial stream is never replayed on another account
 The complete inference request has a 600-second deadline, including retries and streaming
