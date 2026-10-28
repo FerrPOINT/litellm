@@ -2979,6 +2979,7 @@ class BaseLLMHTTPHandler:
         # Needed by streaming callbacks/metadata helpers to reconstruct api_base/model_id
         # but never included in the outbound provider payload.
         request_context["litellm_params"] = dict(litellm_params)
+        request_context["litellm_metadata"] = litellm_metadata
 
         is_stream_request: Final = bool(stream)
         if is_stream_request and fake_stream is True:
@@ -3190,6 +3191,7 @@ class BaseLLMHTTPHandler:
         # Needed by streaming callbacks/metadata helpers to reconstruct api_base/model_id
         # but never included in the outbound provider payload.
         request_context["litellm_params"] = dict(litellm_params)
+        request_context["litellm_metadata"] = litellm_metadata
 
         is_stream_request: Final = bool(stream)
         if is_stream_request and fake_stream is True:

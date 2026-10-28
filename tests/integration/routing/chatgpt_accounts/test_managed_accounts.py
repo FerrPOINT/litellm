@@ -2,9 +2,9 @@ import json
 import os
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,11 +16,10 @@ import jwt
 import pytest
 import yaml
 
-from tests.integration._support.ports import allocate_port
-from tests.integration._support.process import stop_child
-
 from litellm.proxy.chatgpt_accounts.models import AccountBindings, AccountRecord, AccountsState
 from litellm.proxy.chatgpt_accounts.store import AccountStore, write_private_file
+from tests.integration._support.ports import allocate_port
+from tests.integration._support.process import stop_child
 
 
 class ScriptedUpstream(BaseHTTPRequestHandler):
@@ -371,6 +370,22 @@ def test_real_proxy_switches_without_restart_and_keeps_response_owner(tmp_path: 
         for auth_file in (tmp_path / "accounts" / "credentials").rglob("auth.json"):
             credentials: Final = json.loads(auth_file.read_text())
             assert credentials["access_token"] not in log and credentials["refresh_token"] not in log
+
+
+def test_native_responses_stream_records_selected_profile(tmp_path: Path) -> None:
+    with proxy(tmp_path) as (client, ids, process):
+        result: Final = client.post(
+            "/v1/responses", json={"model": "main-dev", "input": "fixture", "stream": True}
+        )
+        assert result.status_code == 200, result.text
+        assert "response.completed" in result.text and process.poll() is None
+        deadline: Final = time.monotonic() + 3
+        expected: Final = f"profile={ids[0]} result=success"
+        while time.monotonic() < deadline:
+            if expected in (tmp_path / "proxy.log").read_text():
+                break
+            time.sleep(0.05)
+        assert expected in (tmp_path / "proxy.log").read_text()
 
 
 def test_rate_limited_profile_never_rotates_to_another_chatgpt_profile(tmp_path: Path) -> None:
