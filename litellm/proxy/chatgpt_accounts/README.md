@@ -44,6 +44,8 @@ Invalid requests do not rotate, and a partial stream is never replayed on anothe
 The complete inference request has a 600-second deadline, including retries and streaming
 `LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT` can shorten that deadline but cannot increase it
 When every account is unavailable, the proxy returns a clear `503` with Retry-After only when a retry time is known
+This includes the first request that exhausts the remaining accounts, using the earliest account retry time
+An invalid request keeps its original error even if other concurrent requests exhausted the accounts
 With automatic failover disabled, the existing provider fallback configuration remains in effect
 
 Token refresh is locked per file, uses atomic private writes and never starts an interactive login from inference

@@ -577,6 +577,26 @@ def test_recovered_account_is_used_after_the_working_account_fails_without_manua
         assert process.poll() is None and len(ids) == 2
 
 
+@pytest.mark.parametrize("path", ("/v1/responses", "/v1/chat/completions"))
+@pytest.mark.parametrize("stream", (False, True))
+def test_first_exhausted_request_has_the_known_account_retry_time(tmp_path: Path, path: str, stream: bool) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.retry_after = "60"
+        ScriptedUpstream.rejected_owners = frozenset({"account-A", "account-B"})
+        body: Final = (
+            {"input": "fixture"} if path == "/v1/responses" else {"messages": [{"role": "user", "content": "fixture"}]}
+        )
+        first: Final = client.post(path, json={"model": "main-dev", "stream": stream, **body})
+        assert first.status_code == 503, first.text
+        assert 1 <= int(first.headers["retry-after"]) <= 60
+        assert "No ChatGPT account is available" in first.text
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        waiting: Final = client.post(path, json={"model": "main-dev", **body})
+        assert waiting.status_code == 503 and "retry-after" in waiting.headers
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        assert process.poll() is None and len(ids) == 2
+
+
 def test_request_deadline_cancels_the_whole_chain(tmp_path: Path) -> None:
     with proxy(tmp_path, automatic=True, deadline=1) as (client, ids, process):
         response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "hold-stream"})

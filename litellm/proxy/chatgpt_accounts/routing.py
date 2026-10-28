@@ -46,6 +46,14 @@ def _metadata(data: Mapping[str, object]) -> Mapping[str, object]:
     return _mapping(data.get("litellm_metadata") or data.get("metadata"))
 
 
+def _account_failure(failure: AccountFailure) -> HTTPException:
+    return HTTPException(
+        failure.status,
+        detail=failure.model_dump(),
+        headers={"Retry-After": str(failure.retry_after)} if failure.retry_after is not None else None,
+    )
+
+
 class AccountsRoutingHook(CustomLogger):
     def __init__(self, service: AccountService) -> None:
         self.turn_off_message_logging = True
@@ -89,11 +97,7 @@ class AccountsRoutingHook(CustomLogger):
         selected: Final = self.service.selection(model, previous if isinstance(previous, str) else None, snapshot)
         automatic: Final = snapshot.bindings.automatic_failover and not previous
         if isinstance(selected, AccountFailure):
-            raise HTTPException(
-                selected.status,
-                detail=selected.model_dump(),
-                headers={"Retry-After": str(selected.retry_after)} if selected.retry_after is not None else None,
-            )
+            raise _account_failure(selected)
         metadata: Final = {
             **{key: value for key, value in _metadata(data).items() if key != ACCOUNT_METADATA_KEY},
             ACCOUNT_METADATA_KEY: str(selected),
@@ -169,11 +173,7 @@ class AccountsRoutingHook(CustomLogger):
             else UUID(account_id)
         )
         if isinstance(selected, AccountFailure):
-            raise HTTPException(
-                selected.status,
-                detail=selected.model_dump(),
-                headers={"Retry-After": str(selected.retry_after)} if selected.retry_after is not None else None,
-            )
+            raise _account_failure(selected)
         return [
             dict(deployment)
             for deployment in candidates
@@ -186,6 +186,24 @@ class AccountsRoutingHook(CustomLogger):
         model_names: Sequence[str],
     ) -> Sequence[str]:
         return model_names
+
+    async def async_post_call_failure_hook(
+        self,
+        request_data: Mapping[str, object],
+        original_exception: Exception,
+        user_api_key_dict: object,
+        traceback_str: str | None = None,
+    ) -> HTTPException | None:
+        metadata: Final = _metadata(request_data)
+        route: Final = metadata.get("_managed_chatgpt_route")
+        if metadata.get("_managed_chatgpt_automatic") is not True or not isinstance(route, str):
+            return None
+        if request_data.get("model") != route or route not in self.service.routes():
+            return None
+        if classify_outage(original_exception, self.service.clock()) is None:
+            return None
+        selected: Final = self.service.selection(route, None)
+        return _account_failure(selected) if isinstance(selected, AccountFailure) else None
 
     def profile_for_attempt(self, kwargs: Mapping[str, object]) -> UUID | None:
         parameters: Final = _mapping(kwargs.get("litellm_params"))

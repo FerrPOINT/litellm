@@ -3,12 +3,13 @@ from typing import Final
 import httpx
 import pytest
 from fastapi import HTTPException
-from openai import RateLimitError
+from openai import BadRequestError, RateLimitError
 from test_service import account
 
+from litellm.proxy.chatgpt_accounts.availability import classify_outage
 from litellm.proxy.chatgpt_accounts.models import ACCOUNT_METADATA_KEY, AccountBindings, AccountsState
 from litellm.proxy.chatgpt_accounts.routing import AccountsRoutingHook
-from litellm.proxy.chatgpt_accounts.service import deployment_id
+from litellm.proxy.chatgpt_accounts.service import AccountService, deployment_id
 
 
 @pytest.mark.asyncio
@@ -31,6 +32,52 @@ async def test_snapshot_survives_switch_and_client_metadata_is_not_authoritative
     assert all(item["model_info"]["managed_chatgpt_account_id"] == str(first) for item in selected)
     new_request: Final = await hook.async_pre_call_hook(None, None, {"model": "main-dev"}, "aresponses")
     assert new_request["metadata"][ACCOUNT_METADATA_KEY] == str(second)
+
+
+@pytest.mark.asyncio
+async def test_final_account_failure_reports_earliest_retry_without_hiding_invalid_requests(
+    service: AccountService,
+) -> None:
+    fixed: Final = AccountService(service.store, service.router, service.probe, clock=lambda: 1000)
+    first: Final = account(fixed)
+    second: Final = account(fixed)
+    assert isinstance(
+        await fixed.bind(
+            AccountBindings(default_account_id=first, automatic_failover=True), fixed.store.read().revision
+        ),
+        AccountsState,
+    )
+    hook: Final = AccountsRoutingHook(fixed)
+    request: Final = await hook.async_pre_call_hook(None, None, {"model": "main-dev"}, "aresponses")
+    assert request is not None
+    error: Final = RateLimitError(
+        "fixture quota",
+        response=httpx.Response(
+            429, headers={"Retry-After": "60"}, request=httpx.Request("POST", "https://fixture.test")
+        ),
+        body={},
+    )
+    outage: Final = classify_outage(error, fixed.clock())
+    assert outage is not None
+    fixed.record_outage(first, outage)
+    assert await hook.async_post_call_failure_hook(request, error, None) is None
+    fixed.record_outage(second, outage.model_copy(update={"retry_at": 1120, "until": 1120}))
+    exhausted: Final = await hook.async_post_call_failure_hook(request, error, None)
+    assert isinstance(exhausted, HTTPException)
+    assert exhausted.status_code == 503 and exhausted.headers == {"Retry-After": "60"}
+    invalid: Final = BadRequestError(
+        "fixture malformed history",
+        response=httpx.Response(400, request=httpx.Request("POST", "https://fixture.test")),
+        body={},
+    )
+    assert await hook.async_post_call_failure_hook(request, invalid, None) is None
+    assert await hook.async_post_call_failure_hook({"model": "unmanaged"}, error, None) is None
+    assert await hook.async_post_call_failure_hook({**request, "model": "unmanaged"}, error, None) is None
+    manual: Final = {
+        "model": "main-dev",
+        "metadata": {"_managed_chatgpt_route": "main-dev", "_managed_chatgpt_automatic": False},
+    }
+    assert await hook.async_post_call_failure_hook(manual, error, None) is None
 
 
 @pytest.mark.asyncio
