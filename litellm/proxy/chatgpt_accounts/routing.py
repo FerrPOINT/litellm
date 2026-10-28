@@ -214,9 +214,10 @@ class AccountsRoutingHook(CustomLogger):
         metadata: Final = _metadata(kwargs)
         scope: Final = metadata.get("_managed_chatgpt_scope")
         revision: Final = metadata.get("_managed_chatgpt_revision")
-        if profile_id is not None and metadata.get("_managed_chatgpt_automatic") is True:
-            if isinstance(scope, str) and isinstance(revision, int):
-                self.service.activate(profile_id, scope, revision)
+        if profile_id is None or metadata.get("_managed_chatgpt_automatic") is not True:
+            return
+        if isinstance(scope, str) and isinstance(revision, int):
+            self.service.activate(profile_id, scope, revision)
 
     async def async_post_call_success_deployment_hook(
         self,

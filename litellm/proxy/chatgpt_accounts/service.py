@@ -428,15 +428,16 @@ class AccountService:
             )
 
         result: Final = self.store.update(activate, advance_revision=False)
-        if isinstance(result, AccountsState) and (event := result.last_switches.get(scope)) is not None:
-            if snapshot.active_accounts.get(scope) != event.current:
-                accounts_logger.info(
-                    "ChatGPT accounts account_switched scope=%s previous=%s current=%s reason=%s",
-                    scope,
-                    event.previous,
-                    event.current,
-                    event.reason,
-                )
+        if not isinstance(result, AccountsState) or (event := result.last_switches.get(scope)) is None:
+            return
+        if snapshot.active_accounts.get(scope) != event.current:
+            accounts_logger.info(
+                "ChatGPT accounts account_switched scope=%s previous=%s current=%s reason=%s",
+                scope,
+                event.previous,
+                event.current,
+                event.reason,
+            )
 
     def clear_cooldowns(self, account_id: UUID, model: str | None = None) -> None:
         cache: Final = self.router.cooldown_cache
