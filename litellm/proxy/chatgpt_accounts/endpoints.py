@@ -204,6 +204,8 @@ async def list_accounts(value: Admin) -> AccountsView:
         revision=state.revision,
         accounts=state.accounts,
         bindings=state.bindings,
+        active_accounts=state.active_accounts,
+        last_switches=state.last_switches,
         routes=tuple(
             RouteView.model_validate(
                 {

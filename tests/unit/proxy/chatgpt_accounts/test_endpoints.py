@@ -15,12 +15,14 @@ async def test_inference_key_cannot_manage_accounts_and_session_rejects_csrf(ser
     app.include_router(router)
     async with httpx.AsyncClient() as upstream:
         app.state.chatgpt_accounts = Controller(service, LoginOperations(service, upstream), "admin-" + "a" * 40)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://pilot") as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://pilot:4001") as client:
             denied: Final = await client.get("/chatgpt/accounts", headers={"Authorization": "Bearer inference-key"})
             assert denied.status_code == 401
             wrong: Final = await client.post("/chatgpt/accounts/session", json={"key": "inference-key"})
             assert wrong.status_code == 401
-            logged_in: Final = await client.post("/chatgpt/accounts/session", json={"key": "admin-" + "a" * 40})
+            logged_in: Final = await client.post(
+                "/chatgpt/accounts/session", json={"key": "admin-" + "a" * 40}, headers={"origin": "http://pilot:4001"}
+            )
             assert logged_in.status_code == 200
             cookie: Final = logged_in.headers["set-cookie"].lower()
             assert "httponly" in cookie and "samesite=strict" in cookie
@@ -31,6 +33,12 @@ async def test_inference_key_cannot_manage_accounts_and_session_rejects_csrf(ser
                 "/chatgpt/accounts/bindings", headers={"origin": "http://evil"}, json={"revision": 0, "bindings": {}}
             )
             assert csrf.status_code == 403
+            other_port: Final = await client.put(
+                "/chatgpt/accounts/bindings",
+                headers={"origin": "http://pilot:4000"},
+                json={"revision": 0, "bindings": {}},
+            )
+            assert other_port.status_code == 403
             signed_out: Final = await client.delete("/chatgpt/accounts/session")
             assert signed_out.status_code == 204
             expired: Final = await client.get("/chatgpt/accounts")

@@ -21597,9 +21597,11 @@ app.include_router(search_router)
 app.include_router(tracing_endpoints.router)
 app.include_router(image_router)
 app.include_router(fine_tuning_router)
+from litellm.proxy.chatgpt_accounts.deadline import AccountsRequestDeadline
 from litellm.proxy.chatgpt_accounts.endpoints import router as chatgpt_accounts_router
 
 app.include_router(chatgpt_accounts_router)
+app.add_middleware(AccountsRequestDeadline)
 app.include_router(credential_router)
 app.include_router(openai_passthrough_router)
 app.include_router(batches_router)

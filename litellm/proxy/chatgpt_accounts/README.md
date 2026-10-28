@@ -1,6 +1,6 @@
 # ChatGPT accounts
 
-Enable manual account selection in a single-worker, file-backed proxy without PostgreSQL or Redis
+Manage ChatGPT accounts in a single-worker, file-backed proxy without PostgreSQL or Redis
 
 ```bash
 export LITELLM_CHATGPT_ACCOUNTS_DIR=/var/lib/litellm/chatgpt-accounts
@@ -26,14 +26,23 @@ Each account has an immutable UUID and its own `credentials/<UUID>/auth.json`; l
 Select the hub default, and optionally override `main-dev` or `app-test`
 Direct ChatGPT models inherit the hub default
 Activation probes every affected model before committing the new bindings
-New requests use the new selection; retries, streams and Responses continuations retain their original account
+New requests use the new selection and Responses continuations retain their original account
 A continuation whose original account is missing or disabled fails instead of using another account
 Reassign an account before disconnecting it; disconnecting does not terminate an existing stream
 
 The manager creates stable Router deployments for each profile and model
-It never changes environment variables per request or automatically rotates between ChatGPT profiles
-Provider failures use the proxy's configured provider fallback chain
-Cooldowns belong to individual deployments, so one profile does not put another profile in cooldown
+It never changes environment variables per request
+Automatic account failover is opt-in through the assignments form or `bindings.automatic_failover`
+When enabled, a failed account is skipped and the working account remains selected until it fails
+Each request attempts an account at most once and never uses another provider as a hidden fallback
+Quota and billing failures affect the account, while model access failures and transient errors affect its deployment
+An observed Retry-After controls recovery, with a local 600-second retry for unknown quota resets and 30 seconds for transient errors
+A failed reserve does not prevent manually assigning a working account
+Invalid requests do not rotate, and a partial stream is never replayed on another account
+The complete inference request has a 600-second deadline, including retries and streaming
+`LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT` can shorten that deadline but cannot increase it
+When every account is unavailable, the proxy returns a clear `503` with Retry-After only when a retry time is known
+With automatic failover disabled, the existing provider fallback configuration remains in effect
 
 Token refresh is locked per file, uses atomic private writes and never starts an interactive login from inference
 A ChatGPT `401 token_invalidated` refreshes the selected profile and retries the same request once
@@ -43,7 +52,8 @@ Explicit command-line device login is now `Authenticator().login()`; `get_access
 The API under `/chatgpt/accounts` supports sessions, pending logins, account checks, renaming, disconnecting and bindings
 Credentials are never included in its response models
 Client parameters cannot override managed credential files or account headers
-Account status and Retry-After are updated from observed provider results; unavailable quota and credit information remains unavailable
+Account status, deployment failures, active selections and switch reasons come from observed provider results
+Unavailable quota and credit information remains unavailable
 Access-token expiry is not a subscription expiry or quota reset
 
 For rollback, restore the previous runtime and configuration while retaining the newest credentials

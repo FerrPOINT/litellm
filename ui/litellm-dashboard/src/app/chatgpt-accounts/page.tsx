@@ -27,6 +27,7 @@ function Assignments({
   busy: boolean;
 }) {
   const [primary, setPrimary] = useState(view.bindings?.default_account_id ?? "");
+  const [automatic, setAutomatic] = useState(view.bindings?.automatic_failover ?? false);
   const [routes, setRoutes] = useState<Record<string, string | null>>(view.bindings?.routes ?? {});
   const options = view.accounts.filter((account) => account.enabled);
   return (
@@ -42,11 +43,41 @@ function Assignments({
           event.preventDefault();
           run(() =>
             fetchClient.PUT("/chatgpt/accounts/bindings", {
-              body: { revision: view.revision, bindings: { default_account_id: primary || null, routes } },
+              body: {
+                revision: view.revision,
+                bindings: { default_account_id: primary || null, routes, automatic_failover: automatic },
+              },
             }),
           );
         }}
       >
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={automatic} onChange={(event) => setAutomatic(event.target.checked)} />
+          Automatically switch ChatGPT accounts when unavailable
+        </label>
+        <p className="text-sm text-muted-foreground">
+          A failed account is skipped until its retry time or a successful access check. New requests keep using the
+          working account. Each account is attempted at most once per request.
+        </p>
+        {Object.entries(view.active_accounts ?? {}).map(([scope, id]) => {
+          const selected = view.accounts.find((account) => account.id === id);
+          const change = view.last_switches?.[scope];
+          return (
+            <div key={scope} className="rounded border p-3 text-sm" role="status">
+              <p>
+                {scope === "default" ? "Hub current account" : scope}: {selected?.label ?? id} · {id.slice(0, 8)}
+              </p>
+              {change && (
+                <p className="text-muted-foreground">
+                  Last switch:{" "}
+                  {view.accounts.find((account) => account.id === change.previous)?.label ?? change.previous}
+                  {" -> "}
+                  {selected?.label ?? id}. Reason: {change.reason}. {new Date(change.at * 1000).toLocaleString()}
+                </p>
+              )}
+            </div>
+          );
+        })}
         <div>
           <Label htmlFor="primary-account">Hub default</Label>
           <select
@@ -119,9 +150,17 @@ function AccountRow({
         <strong className="text-sm">{account.status}</strong>
       </div>
       <p className="text-sm">Assigned: {assigned.join(", ") || "None"}</p>
+      {Object.entries(account.deployment_outages ?? {}).map(([model, outage]) => (
+        <p key={model} className="text-sm text-muted-foreground">
+          {model}: {outage.reason}. {outage.retry_at ? "Provider retry" : "Local retry"}{" "}
+          {outage.until ? new Date(outage.until * 1000).toLocaleString() : "Unavailable"}
+        </p>
+      ))}
       <p className="text-sm text-muted-foreground">
         Last check: {account.last_checked_at ? new Date(account.last_checked_at * 1000).toLocaleString() : "Never"}.
-        Next attempt: {account.retry_at ? new Date(account.retry_at * 1000).toLocaleString() : "Unavailable"}
+        Provider retry time: {account.retry_at ? new Date(account.retry_at * 1000).toLocaleString() : "Unavailable"}.
+        Local retry:{" "}
+        {account.unavailable_until ? new Date(account.unavailable_until * 1000).toLocaleString() : "Not scheduled"}
       </p>
       {account.error_code && <p role="status">{account.error_code}</p>}
       <p className="text-sm text-muted-foreground">Quota, reset, subscription expiry and credits: unavailable</p>
@@ -281,7 +320,7 @@ export default function ChatGPTAccountsPage() {
         </Link>
         <h1 className="mt-4 text-3xl font-semibold">ChatGPT accounts</h1>
         <p className="mt-2 text-muted-foreground">
-          Connect separate accounts and choose which one serves each route. Switching is manual.
+          Connect separate accounts, choose a preferred account, and enable automatic failover when needed.
         </p>
       </header>
       {mutation.error && (
@@ -371,6 +410,9 @@ export default function ChatGPTAccountsPage() {
                 account={account}
                 assigned={[
                   ...(accounts.data.bindings?.default_account_id === account.id ? ["Hub default"] : []),
+                  ...Object.entries(accounts.data.active_accounts ?? {})
+                    .filter(([, id]) => id === account.id)
+                    .map(([scope]) => `Active ${scope}`),
                   ...accounts.data.routes
                     .filter(
                       (route) =>

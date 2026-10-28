@@ -26,6 +26,10 @@ class ScriptedUpstream(BaseHTTPRequestHandler):
     owners: tuple[str, ...] = ()
     bodies: tuple[dict, ...] = ()
     rejected_owners: frozenset[str] = frozenset()
+    failure_status: int = 429
+    retry_after: str | None = None
+    structured_quota: bool = False
+    partial_failure: bool = False
     stream_started = threading.Event()
     release_stream = threading.Event()
 
@@ -46,10 +50,19 @@ class ScriptedUpstream(BaseHTTPRequestHandler):
         type(self).owners = (*type(self).owners, owner)
         type(self).bodies = (*type(self).bodies, body)
         if owner in type(self).rejected_owners:
+            quota: Final = type(self).failure_status == 429 or type(self).structured_quota
             failure: Final = json.dumps(
-                {"error": {"message": "fixture quota", "type": "rate_limit_error", "code": "rate_limit_exceeded"}}
+                {
+                    "error": {
+                        "message": "fixture rejection",
+                        "type": "rate_limit_error" if quota else "invalid_request_error",
+                        "code": "rate_limit_exceeded" if quota else "invalid_input",
+                    }
+                }
             ).encode()
-            self.send_response(429)
+            self.send_response(type(self).failure_status)
+            if type(self).retry_after is not None:
+                self.send_header("Retry-After", type(self).retry_after)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(failure)))
             self.end_headers()
@@ -143,7 +156,23 @@ class ScriptedUpstream(BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": 0, "item": tool},
             {"type": "response.completed", "response": response},
         )
-        selected_events: Final = tool_events if body.get("tools") else events
+        selected_events: Final = (
+            (
+                *events[:4],
+                {
+                    "type": "response.failed",
+                    "response": {
+                        **response,
+                        "status": "failed",
+                        "error": {"code": "rate_limit_exceeded", "message": "fixture quota"},
+                    },
+                },
+            )
+            if type(self).partial_failure
+            else tool_events
+            if body.get("tools")
+            else events
+        )
         payload: Final = "".join(
             "event: " + event["type"] + "\ndata: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
             for index, event in enumerate(selected_events)
@@ -159,10 +188,16 @@ class ScriptedUpstream(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def proxy(tmp_path: Path) -> Iterator[tuple[httpx.Client, tuple[str, str], subprocess.Popen]]:
+def proxy(
+    tmp_path: Path, automatic: bool = False, disable_cooldowns: bool = False, deadline: float = 600
+) -> Iterator[tuple[httpx.Client, tuple[str, str], subprocess.Popen]]:
     ScriptedUpstream.owners = ()
     ScriptedUpstream.bodies = ()
     ScriptedUpstream.rejected_owners = frozenset()
+    ScriptedUpstream.failure_status = 429
+    ScriptedUpstream.retry_after = None
+    ScriptedUpstream.structured_quota = False
+    ScriptedUpstream.partial_failure = False
     ScriptedUpstream.stream_started.clear()
     ScriptedUpstream.release_stream.clear()
     store: Final = AccountStore(tmp_path / "accounts")
@@ -197,7 +232,9 @@ def proxy(tmp_path: Path) -> Iterator[tuple[httpx.Client, tuple[str, str], subpr
         )
     assert isinstance(
         store.update(
-            lambda state: AccountsState(accounts=records, bindings=AccountBindings(default_account_id=ids[0]))
+            lambda state: AccountsState(
+                accounts=records, bindings=AccountBindings(default_account_id=ids[0], automatic_failover=automatic)
+            )
         ),
         AccountsState,
     )
@@ -218,7 +255,7 @@ def proxy(tmp_path: Path) -> Iterator[tuple[httpx.Client, tuple[str, str], subpr
                     for route, model in (("main-dev", "gpt-6.1-terra"), ("app-test", "gpt-6-luna"))
                 ],
                 "litellm_settings": {"turn_off_message_logging": True},
-                "router_settings": {"num_retries": 0},
+                "router_settings": {"num_retries": 0, "disable_cooldowns": disable_cooldowns},
                 "general_settings": {"master_key": "sk-fixture-inference", "disable_spend_logs": True},
             }
         )
@@ -230,6 +267,7 @@ def proxy(tmp_path: Path) -> Iterator[tuple[httpx.Client, tuple[str, str], subpr
         "CHATGPT_API_BASE": f"http://127.0.0.1:{server.server_port}",
         "CHATGPT_TOKEN_DIR": str(tmp_path / "unassigned"),
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+        "LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT": str(deadline),
     }
     log: Final = tmp_path / "proxy.log"
     with log.open("w") as output:
@@ -374,9 +412,7 @@ def test_real_proxy_switches_without_restart_and_keeps_response_owner(tmp_path: 
 
 def test_native_responses_stream_records_selected_profile(tmp_path: Path) -> None:
     with proxy(tmp_path) as (client, ids, process):
-        result: Final = client.post(
-            "/v1/responses", json={"model": "main-dev", "input": "fixture", "stream": True}
-        )
+        result: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture", "stream": True})
         assert result.status_code == 200, result.text
         assert "response.completed" in result.text and process.poll() is None
         deadline: Final = time.monotonic() + 3
@@ -437,3 +473,110 @@ def test_switch_during_stream_keeps_original_profile_and_accepts_parallel_reques
             assert completed.status_code == 200, completed.text
             assert "OK account-A" in completed.text and "OK account-B" not in completed.text
         assert process.poll() is None
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 429, 503])
+@pytest.mark.parametrize("stream", [False, True])
+def test_automatic_failover_repeats_request_and_stays_on_working_profile(
+    tmp_path: Path, status: int, stream: bool
+) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.failure_status = status
+        ScriptedUpstream.rejected_owners = frozenset({"account-A"})
+        first: Final = client.post(
+            "/v1/chat/completions",
+            json={"model": "main-dev", "messages": [{"role": "user", "content": "fixture"}], "stream": stream},
+        )
+        assert first.status_code == 200, first.text
+        assert "OK account-B" in first.text
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        again: Final = client.post("/v1/responses", json={"model": "app-test", "input": "fixture"})
+        assert again.status_code == 200, again.text
+        assert ScriptedUpstream.owners[-1] == "account-B"
+        assert client.post("/chatgpt/accounts/session", json={"key": "admin-" + "a" * 40}).status_code == 200
+        state: Final = client.get("/chatgpt/accounts").json()
+        assert state["active_accounts"]["default"] == ids[1]
+        ScriptedUpstream.rejected_owners = frozenset({"account-B"})
+        checked: Final = client.post(f"/chatgpt/accounts/{ids[0]}/check")
+        assert checked.status_code == 200, checked.text
+        reversed_request: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert reversed_request.status_code == 200, reversed_request.text
+        assert ScriptedUpstream.owners[-2:] == ("account-B", "account-A")
+        ScriptedUpstream.rejected_owners = frozenset({"account-A", "account-B"})
+        exhausted: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert exhausted.status_code == 503, exhausted.text
+        count: Final = len(ScriptedUpstream.owners)
+        waiting: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert waiting.status_code == 503
+        assert len(ScriptedUpstream.owners) == count
+        assert process.poll() is None
+
+
+def test_automatic_failover_does_not_repeat_invalid_requests_on_other_accounts(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.failure_status = 400
+        ScriptedUpstream.rejected_owners = frozenset({"account-A"})
+        response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert response.status_code == 400, response.text
+        assert ScriptedUpstream.owners == ("account-A",)
+        assert client.post("/chatgpt/accounts/session", json={"key": "admin-" + "a" * 40}).status_code == 200
+        state: Final = client.get("/chatgpt/accounts").json()
+        assert state["active_accounts"]["default"] == ids[0]
+        assert all(account["unavailable_reason"] is None for account in state["accounts"])
+        ScriptedUpstream.rejected_owners = frozenset()
+        valid: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert valid.status_code == 200, valid.text
+        assert ScriptedUpstream.owners == ("account-A", "account-A")
+        assert process.poll() is None
+
+
+def test_one_request_never_retries_a_failed_account_even_if_its_reset_is_immediate(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True, disable_cooldowns=True) as (client, ids, process):
+        ScriptedUpstream.rejected_owners = frozenset({"account-A"})
+        ScriptedUpstream.retry_after = "0"
+        response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert response.status_code == 200, response.text
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        assert process.poll() is None and len(ids) == 2
+
+
+def test_provider_quota_code_can_fail_over_even_when_http_status_is_400(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.failure_status = 400
+        ScriptedUpstream.structured_quota = True
+        ScriptedUpstream.rejected_owners = frozenset({"account-A"})
+        response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert response.status_code == 200, response.text
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        assert process.poll() is None and len(ids) == 2
+
+
+def test_account_retry_after_does_not_delay_the_next_account(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.retry_after = "600"
+        ScriptedUpstream.rejected_owners = frozenset({"account-A"})
+        response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture"})
+        assert response.status_code == 200, response.text
+        assert ScriptedUpstream.owners == ("account-A", "account-B")
+        assert process.poll() is None and len(ids) == 2
+
+
+def test_request_deadline_cancels_the_whole_chain(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True, deadline=1) as (client, ids, process):
+        response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "hold-stream"})
+        ScriptedUpstream.release_stream.set()
+        assert response.status_code == 504, response.text
+        assert response.json()["error"]["code"] == "chatgpt_request_deadline"
+        assert ScriptedUpstream.owners == ("account-A",)
+        assert process.poll() is None and len(ids) == 2
+
+
+def test_a_partial_stream_is_not_replayed_on_another_account(tmp_path: Path) -> None:
+    with proxy(tmp_path, automatic=True) as (client, ids, process):
+        ScriptedUpstream.partial_failure = True
+        response: Final = client.post("/v1/responses", json={"model": "main-dev", "input": "fixture", "stream": True})
+        assert response.status_code == 200, response.text
+        assert "OK account-A" in response.text
+        assert "response.failed" in response.text or '"error"' in response.text
+        assert ScriptedUpstream.owners == ("account-A",)
+        assert process.poll() is None and len(ids) == 2

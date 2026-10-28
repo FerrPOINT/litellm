@@ -49,13 +49,17 @@ it("uses independent account IDs for identical labels and submits route override
   const primary = await screen.findByLabelText("Hub default");
   fireEvent.change(primary, { target: { value: second } });
   fireEvent.change(screen.getByLabelText(/app-test ·/), { target: { value: first } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Automatically switch ChatGPT accounts when unavailable" }));
   fireEvent.click(screen.getByRole("button", { name: "Verify and apply" }));
   await screen.findByRole("button", { name: "Verify and apply" });
   await vi.waitFor(() =>
     expect(requests).toEqual([
       {
         path: "/chatgpt/accounts/bindings",
-        body: { revision: 7, bindings: { default_account_id: second, routes: { "app-test": first } } },
+        body: {
+          revision: 7,
+          bindings: { default_account_id: second, routes: { "app-test": first }, automatic_failover: true },
+        },
       },
     ]),
   );

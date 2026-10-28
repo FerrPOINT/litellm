@@ -10,6 +10,8 @@ from litellm.types.router import RetryPolicy
 
 _EXCEPTION_FOR_FIELD: Final = MappingProxyType(
     {
+        "PaymentRequiredErrorRetries": litellm.PaymentRequiredError,
+        "PermissionDeniedErrorRetries": litellm.PermissionDeniedError,
         "BadRequestErrorRetries": litellm.BadRequestError,
         "AuthenticationErrorRetries": litellm.AuthenticationError,
         "TimeoutErrorRetries": litellm.Timeout,
@@ -21,10 +23,19 @@ _EXCEPTION_FOR_FIELD: Final = MappingProxyType(
     }
 )
 
-_SPECIFIC_FIELDS: Final = tuple(name for name in RetryPolicy.model_fields if name != "DefaultRetries")
+_SPECIFIC_FIELDS: Final = tuple(
+    name for name in RetryPolicy.model_fields if name.endswith("Retries") and name != "DefaultRetries"
+)
 
 
 def _error(exception_type: type[Exception]) -> Exception:
+    if exception_type is litellm.PermissionDeniedError:
+        return litellm.PermissionDeniedError(
+            message="boom",
+            llm_provider="openai",
+            model="gpt-5.6",
+            response=httpx.Response(403, request=httpx.Request("POST", "https://fixture.test")),
+        )
     return exception_type(message="boom", llm_provider="openai", model="gpt-5.6")
 
 
@@ -133,14 +144,21 @@ def test_a_404_without_not_found_retries_falls_back_to_bad_request_then_default_
         == 0
     )
     assert get_num_retries_from_retry_policy(exception=exception, retry_policy=RetryPolicy(DefaultRetries=3)) == 3
-    assert get_num_retries_from_retry_policy(exception=_error(litellm.NotFoundError), retry_policy=RetryPolicy(DefaultRetries=3)) == 3
+    assert (
+        get_num_retries_from_retry_policy(
+            exception=_error(litellm.NotFoundError), retry_policy=RetryPolicy(DefaultRetries=3)
+        )
+        == 3
+    )
 
 
 def test_not_found_retries_leaves_a_plain_400_alone():
     exception: Final = _error(litellm.BadRequestError)
     assert exception.status_code == 400
 
-    assert get_num_retries_from_retry_policy(exception=exception, retry_policy=RetryPolicy(NotFoundErrorRetries=0)) is None
+    assert (
+        get_num_retries_from_retry_policy(exception=exception, retry_policy=RetryPolicy(NotFoundErrorRetries=0)) is None
+    )
     assert (
         get_num_retries_from_retry_policy(
             exception=exception, retry_policy=RetryPolicy(NotFoundErrorRetries=0, BadRequestErrorRetries=2)
@@ -208,3 +226,32 @@ def test_model_group_policy_replaces_the_global_policy():
         )
         == 5
     )
+
+
+def test_payment_retry_can_target_another_billing_account_without_retrying_invalid_requests():
+    policy: Final = RetryPolicy(PaymentRequiredErrorRetries=1, BadRequestErrorRetries=0)
+    assert get_num_retries_from_retry_policy(_error(litellm.PaymentRequiredError), policy) == 1
+    assert get_num_retries_from_retry_policy(_error(litellm.BadRequestError), policy) == 0
+
+
+@pytest.mark.parametrize(
+    "status,field",
+    [
+        (401, "AuthenticationErrorRetries"),
+        (402, "PaymentRequiredErrorRetries"),
+        (403, "PermissionDeniedErrorRetries"),
+        (429, "RateLimitErrorRetries"),
+        (408, "TimeoutErrorRetries"),
+        (500, "InternalServerErrorRetries"),
+        (503, "ServiceUnavailableErrorRetries"),
+    ],
+)
+def test_explicit_status_policy_handles_provider_errors_mapped_as_bad_requests(status: int, field: str):
+    exception: Final = litellm.BadRequestError(
+        message="provider error",
+        llm_provider="openai",
+        model="fixture",
+        response=httpx.Response(status, request=httpx.Request("POST", "https://fixture.test")),
+    )
+    assert get_num_retries_from_retry_policy(exception, RetryPolicy(**{field: 1, "BadRequestErrorRetries": 0})) == 1
+    assert get_num_retries_from_retry_policy(exception, RetryPolicy(BadRequestErrorRetries=0)) == 0

@@ -25497,6 +25497,11 @@ export interface components {
         };
         /** AccountBindings */
         AccountBindings: {
+            /**
+             * Automatic Failover
+             * @default false
+             */
+            automatic_failover: boolean;
             /** Default Account Id */
             default_account_id?: string | null;
             /** Routes */
@@ -25511,10 +25516,44 @@ export interface components {
             /** Label */
             label: string;
         };
+        /** AccountOutage */
+        AccountOutage: {
+            /** Code */
+            code: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "authentication" | "payment" | "access_denied" | "quota" | "provider_unavailable";
+            /** Retry At */
+            retry_at: number | null;
+            /**
+             * Scope
+             * @default account
+             * @enum {string}
+             */
+            scope: "account" | "deployment";
+            /**
+             * Since
+             * @default 0
+             */
+            since: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "login_required" | "rate_limited" | "error";
+            /** Until */
+            until: number | null;
+        };
         /** AccountRecord */
         AccountRecord: {
             /** Client Id */
             client_id: string;
+            /** Deployment Outages */
+            deployment_outages?: {
+                [key: string]: components["schemas"]["AccountOutage"];
+            };
             /** Email */
             email?: string | null;
             /**
@@ -25548,8 +25587,31 @@ export interface components {
             status: "ready" | "login_required" | "rate_limited" | "error" | "disabled";
             /** Subject */
             subject?: string | null;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            /** Unavailable Since */
+            unavailable_since?: number | null;
+            /** Unavailable Until */
+            unavailable_until?: number | null;
             /** Workspace */
             workspace?: string | null;
+        };
+        /** AccountSwitch */
+        AccountSwitch: {
+            /** At */
+            at: number;
+            /**
+             * Current
+             * Format: uuid
+             */
+            current: string;
+            /**
+             * Previous
+             * Format: uuid
+             */
+            previous: string;
+            /** Reason */
+            reason: string;
         };
         /** AccountsState */
         AccountsState: {
@@ -25558,7 +25620,15 @@ export interface components {
              * @default []
              */
             accounts: components["schemas"]["AccountRecord"][];
+            /** Active Accounts */
+            active_accounts?: {
+                [key: string]: string;
+            };
             bindings?: components["schemas"]["AccountBindings"];
+            /** Last Switches */
+            last_switches?: {
+                [key: string]: components["schemas"]["AccountSwitch"];
+            };
             /**
              * Revision
              * @default 0
@@ -25578,7 +25648,15 @@ export interface components {
              * @default []
              */
             accounts: components["schemas"]["AccountRecord"][];
+            /** Active Accounts */
+            active_accounts?: {
+                [key: string]: string;
+            };
             bindings?: components["schemas"]["AccountBindings"];
+            /** Last Switches */
+            last_switches?: {
+                [key: string]: components["schemas"]["AccountSwitch"];
+            };
             /** Quota Source */
             quota_source?: string | null;
             /**
@@ -44750,12 +44828,21 @@ export interface components {
             InternalServerErrorRetries?: number | null;
             /** Notfounderrorretries */
             NotFoundErrorRetries?: number | null;
+            /** Paymentrequirederrorretries */
+            PaymentRequiredErrorRetries?: number | null;
+            /** Permissiondeniederrorretries */
+            PermissionDeniedErrorRetries?: number | null;
             /** Ratelimiterrorretries */
             RateLimitErrorRetries?: number | null;
             /** Serviceunavailableerrorretries */
             ServiceUnavailableErrorRetries?: number | null;
             /** Timeouterrorretries */
             TimeoutErrorRetries?: number | null;
+            /**
+             * Retry Same Deployment
+             * @default true
+             */
+            retry_same_deployment: boolean;
         };
         /**
          * RoleMappings

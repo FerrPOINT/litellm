@@ -1,18 +1,16 @@
-import time
 from collections.abc import Mapping, Sequence
-from email.utils import parsedate_to_datetime
 from typing import Final
 from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
-from openai import APIStatusError
 from pydantic import TypeAdapter
 
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.llms.chatgpt.common_utils import is_chatgpt_oauth_key
 from litellm.types.utils import CallTypes
 
+from .availability import classify_outage, retry_at
 from .models import ACCOUNT_ID_FIELD, ACCOUNT_METADATA_KEY, AccountFailure
 from .service import AccountService, accounts_logger, deployment_id
 
@@ -29,6 +27,12 @@ _CREDENTIAL_FIELDS: Final = frozenset(
         "model_info",
         "litellm_params",
         "extra_body",
+        "num_retries",
+        "fallbacks",
+        "disable_fallbacks",
+        "retry_policy",
+        "model_group_retry_policy",
+        "_retry_skipped_deployment_ids",
     }
 )
 
@@ -80,15 +84,53 @@ class AccountsRoutingHook(CustomLogger):
                 400, detail={"code": "managed_credentials", "message": "Use the gateway inference key."}
             )
         previous: Final = data.get("previous_response_id")
-        selected: Final = self.service.selection(model, previous if isinstance(previous, str) else None)
+        snapshot: Final = self.service.store.read()
+        selected: Final = self.service.selection(model, previous if isinstance(previous, str) else None, snapshot)
+        automatic: Final = snapshot.bindings.automatic_failover and not previous
         if isinstance(selected, AccountFailure):
-            raise HTTPException(selected.status, detail=selected.model_dump())
+            raise HTTPException(
+                selected.status,
+                detail=selected.model_dump(),
+                headers={"Retry-After": str(selected.retry_after)} if selected.retry_after is not None else None,
+            )
         metadata: Final = {
             **{key: value for key, value in _metadata(data).items() if key != ACCOUNT_METADATA_KEY},
             ACCOUNT_METADATA_KEY: str(selected),
             "_managed_chatgpt_route": model,
+            "_managed_chatgpt_scope": self.service.scope(snapshot.bindings, model),
+            "_managed_chatgpt_revision": snapshot.revision,
+            "_managed_chatgpt_automatic": bool(automatic),
+            "_managed_chatgpt_started_at": self.service.clock(),
         }
-        return {**data, "metadata": metadata, "litellm_metadata": metadata}
+        attempts: Final = max(0, sum(account.enabled for account in snapshot.accounts) - 1)
+        retry_options: Final[Mapping[str, object]] = (
+            {
+                "num_retries": attempts,
+                "disable_fallbacks": True,
+                "fallbacks": [],
+                "model_group_retry_policy": {
+                    model: {
+                        "DefaultRetries": attempts,
+                        "BadRequestErrorRetries": 0,
+                        "PaymentRequiredErrorRetries": attempts,
+                        "AuthenticationErrorRetries": attempts,
+                        "PermissionDeniedErrorRetries": attempts,
+                        "RateLimitErrorRetries": attempts,
+                        "TimeoutErrorRetries": attempts,
+                        "InternalServerErrorRetries": attempts,
+                        "ServiceUnavailableErrorRetries": attempts,
+                        "NotFoundErrorRetries": 0,
+                        "ContentPolicyViolationErrorRetries": 0,
+                        "retry_same_deployment": False,
+                    }
+                },
+            }
+            if automatic
+            else {"num_retries": 0, "disable_fallbacks": True, "fallbacks": ()}
+            if snapshot.bindings.automatic_failover
+            else {}
+        )
+        return {**data, **retry_options, "metadata": metadata, "litellm_metadata": metadata}
 
     async def async_filter_deployments(
         self,
@@ -105,10 +147,30 @@ class AccountsRoutingHook(CustomLogger):
             raise HTTPException(
                 409, detail={"code": "account_not_resolved", "message": "No managed account was selected."}
             )
+        metadata: Final = _metadata(request_kwargs or {})
+        healthy: Final = frozenset(
+            UUID(value)
+            for deployment in healthy_deployments
+            if isinstance(value := _mapping(deployment.get("model_info")).get(ACCOUNT_ID_FIELD), str)
+        )
+        scope: Final = metadata.get("_managed_chatgpt_scope")
+        selected: Final = (
+            self.service.retry_selection(
+                UUID(account_id), scope if isinstance(scope, str) else "default", healthy, model
+            )
+            if metadata.get("_managed_chatgpt_automatic") is True
+            else UUID(account_id)
+        )
+        if isinstance(selected, AccountFailure):
+            raise HTTPException(
+                selected.status,
+                detail=selected.model_dump(),
+                headers={"Retry-After": str(selected.retry_after)} if selected.retry_after is not None else None,
+            )
         return [
             dict(deployment)
             for deployment in healthy_deployments
-            if _mapping(deployment.get("model_info")).get(ACCOUNT_ID_FIELD) == account_id
+            if _mapping(deployment.get("model_info")).get(ACCOUNT_ID_FIELD) == str(selected)
         ]
 
     async def async_filter_listed_models(
@@ -118,31 +180,43 @@ class AccountsRoutingHook(CustomLogger):
     ) -> Sequence[str]:
         return model_names
 
-    def _log_result(self, kwargs: Mapping[str, object], result: str) -> UUID | None:
+    def profile_for_attempt(self, kwargs: Mapping[str, object]) -> UUID | None:
         parameters: Final = _mapping(kwargs.get("litellm_params"))
         metadata: Final = _metadata(kwargs) or _metadata(parameters)
         route: Final = metadata.get("_managed_chatgpt_route")
-        account_id: Final = metadata.get(ACCOUNT_METADATA_KEY)
-        if route not in self.service.routes() or not isinstance(account_id, str):
-            return
-        try:
-            profile_id: Final = UUID(account_id)
-        except ValueError:
-            return None
-        if self.service.record(profile_id) is None:
+        if not isinstance(route, str) or route not in self.service.routes():
             return None
         template: Final = next(item for item in self.service.templates if item.model_name == route)
         actual_id: Final = _mapping(metadata.get("model_info")).get("id")
-        if actual_id != deployment_id(profile_id, template):
+        return next(
+            (item.id for item in self.service.store.read().accounts if deployment_id(item.id, template) == actual_id),
+            None,
+        )
+
+    def _log_result(self, kwargs: Mapping[str, object], result: str) -> UUID | None:
+        profile_id: Final = self.profile_for_attempt(kwargs)
+        if profile_id is None:
             return None
+        metadata: Final = _metadata(kwargs) or _metadata(_mapping(kwargs.get("litellm_params")))
+        route: Final = metadata.get("_managed_chatgpt_route")
+        template: Final = next(item for item in self.service.templates if item.model_name == route)
         accounts_logger.info(
             "ChatGPT accounts request_finished route=%s model=%s profile=%s result=%s",
             route,
             template.litellm_params.model,
-            account_id,
+            profile_id,
             result,
         )
         return profile_id
+
+    async def async_pre_call_deployment_hook(self, kwargs: Mapping[str, object], call_type: CallTypes | None) -> None:
+        profile_id: Final = self.profile_for_attempt(kwargs)
+        metadata: Final = _metadata(kwargs)
+        scope: Final = metadata.get("_managed_chatgpt_scope")
+        revision: Final = metadata.get("_managed_chatgpt_revision")
+        if profile_id is not None and metadata.get("_managed_chatgpt_automatic") is True:
+            if isinstance(scope, str) and isinstance(revision, int):
+                self.service.activate(profile_id, scope, revision)
 
     async def async_post_call_success_deployment_hook(
         self,
@@ -153,11 +227,14 @@ class AccountsRoutingHook(CustomLogger):
         profile_id: Final = self._log_result(request_data, "success")
         if profile_id is None:
             return
-        account: Final = self.service.record(profile_id)
-        if account is not None and account.enabled and account.status != "ready":
-            self.service.update_account(
-                profile_id, {"status": "ready", "error_code": None, "retry_at": None}, advance_revision=False
-            )
+        started: Final = _metadata(request_data).get("_managed_chatgpt_started_at")
+        route: Final = _metadata(request_data).get("_managed_chatgpt_route")
+        model: Final = next(
+            (item.litellm_params.model for item in self.service.templates if item.model_name == route), None
+        )
+        self.service.record_success(
+            profile_id, float(started) if isinstance(started, (float, int)) else self.service.clock(), model
+        )
 
     async def async_post_call_failure_deployment_hook(
         self,
@@ -169,31 +246,14 @@ class AccountsRoutingHook(CustomLogger):
         profile_id: Final = self._log_result(request_data, "failure")
         if profile_id is None:
             return
-        account: Final = self.service.record(profile_id)
-        if account is None or not account.enabled:
-            return
-        response: Final = exception.response if isinstance(exception, (APIStatusError, httpx.HTTPStatusError)) else None
-        status: Final = response.status_code if response is not None else None
-        self.service.update_account(
-            profile_id,
-            {
-                "status": "login_required" if status == 401 else "rate_limited" if status == 429 else "error",
-                "error_code": f"provider_{status}" if status else "provider_error",
-                "retry_at": self.retry_at(response),
-            },
-            advance_revision=False,
-        )
+        outage: Final = classify_outage(exception, self.service.clock())
+        if outage is not None:
+            route: Final = _metadata(request_data).get("_managed_chatgpt_route")
+            model: Final = next(
+                (item.litellm_params.model for item in self.service.templates if item.model_name == route), None
+            )
+            self.service.record_outage(profile_id, outage, model)
 
     @staticmethod
     def retry_at(response: httpx.Response | None) -> float | None:
-        value: Final = TypeAdapter[str | None](str | None).validate_python(
-            response.headers.get("retry-after") if response is not None else None
-        )
-        if value is None:
-            return None
-        if value.isdecimal():
-            return time.time() + int(value)
-        try:
-            return parsedate_to_datetime(value).timestamp()
-        except (TypeError, ValueError, OverflowError):
-            return None
+        return retry_at(response)

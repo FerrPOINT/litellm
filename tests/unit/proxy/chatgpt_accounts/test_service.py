@@ -15,7 +15,6 @@ from litellm.proxy.chatgpt_accounts.models import (
 from litellm.proxy.chatgpt_accounts.service import AccountService, deployment_id
 from litellm.proxy.chatgpt_accounts.store import AccountStore, write_private_file
 from litellm.responses.utils import ResponsesAPIRequestUtils
-from litellm.router import Router
 
 
 class ReadyProbe:
@@ -176,3 +175,118 @@ async def test_overrides_do_not_allow_disabling_hub_default(service: AccountServ
         AccountBindings(routes={"main-dev": second, "app-test": second}), service.store.read().revision
     )
     assert isinstance(absent_default, AccountFailure) and absent_default.code == "account_required"
+
+
+@pytest.mark.asyncio
+async def test_automatic_failover_stays_on_working_account_and_returns_when_it_fails(service) -> None:
+    from dataclasses import dataclass
+
+    import httpx
+    from openai import RateLimitError
+
+    from litellm.proxy.chatgpt_accounts.availability import classify_outage
+
+    @dataclass
+    class Clock:
+        now: float = 1000
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock: Final = Clock()
+    managed: Final = AccountService(service.store, service.router, ReadyProbe(), clock)
+    first: Final = account(managed)
+    second: Final = account(managed)
+    state: Final = await managed.bind(
+        AccountBindings(default_account_id=first, automatic_failover=True), managed.store.read().revision
+    )
+    assert isinstance(state, AccountsState)
+    managed.activate(first, "default", state.revision)
+    failure: Final = RateLimitError(
+        "fixture",
+        response=httpx.Response(
+            429, headers={"retry-after": "60"}, request=httpx.Request("POST", "https://fixture.test")
+        ),
+        body={},
+    )
+    outage: Final = classify_outage(failure, clock())
+    assert outage is not None
+    managed.record_outage(first, outage)
+    managed.record_success(first, 999)
+    assert managed.record(first).unavailable_reason == "quota"
+    assert managed.selection("main-dev", None) == second
+    managed.activate(second, "default", state.revision)
+    blocked: Final = managed.disable(second)
+    assert isinstance(blocked, AccountFailure) and blocked.status == 409
+    clock.now = 1061
+    assert managed.selection("app-test", None) == second
+    reverse: Final = classify_outage(failure, clock())
+    assert reverse is not None
+    managed.record_outage(second, reverse)
+    assert managed.selection("main-dev", None) == first
+    managed.activate(first, "default", state.revision)
+    managed.record_success(first, clock())
+    assert managed.record(first).status == "ready"
+    assert managed.store.read().revision == state.revision
+    assert managed.store.read().last_switches["default"].reason == "quota"
+
+
+@pytest.mark.asyncio
+async def test_automatic_failover_does_not_retarget_response_continuations(service) -> None:
+    first: Final = account(service)
+    second: Final = account(service)
+    state: Final = await service.bind(
+        AccountBindings(default_account_id=first, automatic_failover=True), service.store.read().revision
+    )
+    assert isinstance(state, AccountsState)
+    response: Final = ResponsesAPIRequestUtils._build_responses_api_response_id(
+        "chatgpt", deployment_id(first, service.templates[0]), "resp_fixture"
+    )
+    service.activate(second, "default", state.revision)
+    assert service.selection("main-dev", None) == second
+    assert service.selection("main-dev", response) == first
+
+
+@pytest.mark.asyncio
+async def test_deployment_outage_keeps_the_same_accounts_other_model_available(service: AccountService) -> None:
+    import httpx
+    from openai import APIStatusError
+    from litellm.proxy.chatgpt_accounts.availability import classify_outage
+
+    first: Final = account(service)
+    second: Final = account(service)
+    state: Final = await service.bind(
+        AccountBindings(default_account_id=first, automatic_failover=True), service.store.read().revision
+    )
+    assert isinstance(state, AccountsState)
+    denied: Final = APIStatusError(
+        "model denied", response=httpx.Response(403, request=httpx.Request("POST", "https://fixture.test")), body={}
+    )
+    outage: Final = classify_outage(denied, service.clock())
+    assert outage is not None
+    model: Final = service.templates[0].litellm_params.model
+    service.record_outage(first, outage, model)
+    assert service.selection("main-dev", None) == second
+    assert service.selection("app-test", None) == first
+    service.record_success(first, 0, model)
+    assert service.selection("main-dev", None) == second
+    service.record_success(first, service.clock(), model)
+    assert service.selection("main-dev", None) == first
+
+
+@pytest.mark.asyncio
+async def test_selecting_a_working_account_does_not_require_a_broken_reserve_to_log_in(service: AccountService) -> None:
+    first: Final = account(service)
+    second: Final = account(service)
+    service.update_account(first, {"status": "login_required"})
+
+    class WorkingAccountProbe:
+        async def check(self, auth_file: Path, models: tuple[str, ...]) -> ProbeResult:
+            if auth_file == service.store.auth_file(second):
+                return ProbeResult(models=models)
+            return ProbeResult(error=AccountFailure(code="login_required", message="Sign in again", status=401))
+
+    managed: Final = AccountService(service.store, service.router, WorkingAccountProbe())
+    bound: Final = await managed.bind(AccountBindings(default_account_id=second, automatic_failover=True), managed.store.read().revision)
+    assert isinstance(bound, AccountsState)
+    assert managed.selection("main-dev", None) == second

@@ -8931,14 +8931,16 @@ class Router:
             )
 
     @staticmethod
-    def _deployment_ids_to_skip_on_retry(exception: Exception, already_skipped: object) -> tuple[str, ...]:
+    def _deployment_ids_to_skip_on_retry(
+        exception: Exception, already_skipped: object, retry_same_deployment: bool = True
+    ) -> tuple[str, ...]:
         failed_deployment_id: Final[str | None] = getattr(exception, "retry_skip_deployment_id", None) or getattr(
             exception, "failed_deployment_id", None
         )
         status_code: Final = getattr(exception, "status_code", None)
         if not failed_deployment_id or not isinstance(status_code, int):
             return ()
-        if litellm.should_retry(status_code):
+        if retry_same_deployment and litellm.should_retry(status_code):
             return ()
         already_skipped_ids: Final = _as_retry_skipped_deployment_ids(already_skipped)
         skipped: Final = tuple(sorted(frozenset((*already_skipped_ids, failed_deployment_id))))
@@ -8958,6 +8960,10 @@ class Router:
         # Support per-request model_group_retry_policy override (from key/team settings)
         model_group_retry_policy: Final = kwargs.pop("model_group_retry_policy", self.model_group_retry_policy)
         model_group: Final[str | None] = kwargs.get("model")
+        selected_retry_policy: Final = resolve_retry_policy(self.retry_policy, model_group, model_group_retry_policy)
+        retry_same_deployment: Final = (
+            selected_retry_policy.retry_same_deployment if selected_retry_policy is not None else True
+        )
         request_num_retries: Final[int | None] = kwargs.pop("num_retries", None)
         num_retries = request_num_retries
         if num_retries is None:
@@ -9051,6 +9057,7 @@ class Router:
                 first_skipped_ids: Final = self._deployment_ids_to_skip_on_retry(
                     exception=original_exception,
                     already_skipped=kwargs.get("_retry_skipped_deployment_ids"),
+                    retry_same_deployment=retry_same_deployment,
                 )
                 if first_skipped_ids:
                     kwargs["_retry_skipped_deployment_ids"] = first_skipped_ids  # rebind-ok: the next attempt reads it
@@ -9059,7 +9066,7 @@ class Router:
 
             verbose_router_logger.debug("Retrying request with num_retries: %s", num_retries)
             # decides how long to sleep before retry
-            retry_after: Final = self._time_to_sleep_before_retry(
+            retry_after: Final = 0 if not retry_same_deployment else self._time_to_sleep_before_retry(
                 e=original_exception,
                 remaining_retries=num_retries,
                 num_retries=num_retries,
@@ -9130,10 +9137,11 @@ class Router:
                     skipped_ids = self._deployment_ids_to_skip_on_retry(
                         exception=e,
                         already_skipped=kwargs.get("_retry_skipped_deployment_ids"),
+                        retry_same_deployment=retry_same_deployment,
                     )
                     if skipped_ids:
                         kwargs["_retry_skipped_deployment_ids"] = skipped_ids  # rebind-ok: the next attempt reads it
-                    _timeout = self._time_to_sleep_before_retry(
+                    _timeout = 0 if not retry_same_deployment else self._time_to_sleep_before_retry(
                         e=e,
                         remaining_retries=remaining_retries,
                         num_retries=num_retries,

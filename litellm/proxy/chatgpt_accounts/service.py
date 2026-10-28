@@ -1,7 +1,8 @@
 import asyncio
 import hashlib
+import math
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Final, Protocol
 from uuid import UUID
@@ -17,7 +18,16 @@ from litellm.responses.utils import ResponsesAPIRequestUtils
 from litellm.router import Router
 from litellm.types.router import Deployment
 
-from .models import ACCOUNT_ID_FIELD, AccountBindings, AccountFailure, AccountRecord, AccountsState, ProbeResult
+from .availability import AccountOutage, available, next_attempt
+from .models import (
+    ACCOUNT_ID_FIELD,
+    AccountBindings,
+    AccountFailure,
+    AccountRecord,
+    AccountsState,
+    AccountSwitch,
+    ProbeResult,
+)
 from .store import AccountStore
 
 accounts_logger: Final = verbose_proxy_logger.getChild("chatgpt_accounts")
@@ -118,8 +128,11 @@ def selected_account(bindings: AccountBindings, route: str) -> UUID | None:
 
 
 class AccountService:
-    def __init__(self, store: AccountStore, router: Router, probe: AccountProbe) -> None:
+    def __init__(
+        self, store: AccountStore, router: Router, probe: AccountProbe, clock: Callable[[], float] = time.time
+    ) -> None:
         self.store = store
+        self.clock = clock
         self.router = router
         self.probe = probe
         self.templates = tuple(
@@ -179,8 +192,11 @@ class AccountService:
         account: Final = self.record(account_id)
         if account is None:
             return AccountFailure(code="account_not_found", message="Account not found.", status=404)
-        result: Final = await self.probe.check(self.store.auth_file(account_id), models)
-        updates: Final = {
+        required: Final = models or tuple(
+            dict.fromkeys(item.litellm_params.model.removeprefix("chatgpt/") for item in self.templates)
+        )
+        result: Final = await self.probe.check(self.store.auth_file(account_id), required)
+        updates: Final[Mapping[str, object]] = {
             "status": (
                 "ready"
                 if result.error is None
@@ -193,7 +209,20 @@ class AccountService:
             "models": result.models if result.error is None else account.models,
             "last_checked_at": time.time(),
             "error_code": result.error.code if result.error else None,
+            **(
+                {
+                    "unavailable_reason": None,
+                    "unavailable_until": None,
+                    "unavailable_since": None,
+                    "retry_at": None,
+                    "deployment_outages": {},
+                }
+                if result.error is None
+                else {}
+            ),
         }
+        if result.error is None:
+            self.clear_cooldowns(account_id)
         saved: Final = self.update_account(account_id, updates, advance_revision=False)
         return result.error if result.error else saved
 
@@ -219,7 +248,7 @@ class AccountService:
             if (failure := await self.verify_binding(bindings, account_id)) is not None:
                 return failure
         result: Final = self.store.update(
-            lambda state: state.model_copy(update={"bindings": bindings}),
+            lambda state: state.model_copy(update={"bindings": bindings, "active_accounts": {}, "last_switches": {}}),
             expected_revision=revision,
         )
         if isinstance(result, AccountsState):
@@ -240,6 +269,9 @@ class AccountService:
             )
         )
         result: Final = await self.probe.check(self.store.auth_file(account_id), required)
+        if result.error is None:
+            self.record_success(account_id, self.clock())
+            self.clear_cooldowns(account_id)
         return result.error
 
     def update_account(
@@ -266,8 +298,10 @@ class AccountService:
 
     def disable(self, account_id: UUID) -> AccountsState | AccountFailure:
         def update(state: AccountsState) -> AccountsState | AccountFailure:
-            if state.bindings.default_account_id == account_id or any(
-                selected_account(state.bindings, route) == account_id for route in self.routes()
+            if (
+                account_id in state.active_accounts.values()
+                or state.bindings.default_account_id == account_id
+                or any(selected_account(state.bindings, route) == account_id for route in self.routes())
             ):
                 return AccountFailure(
                     code="account_in_use", message="Reassign its routes before disconnecting.", status=409
@@ -287,8 +321,10 @@ class AccountService:
 
         return self.store.update(update)
 
-    def selection(self, route: str, previous_response_id: str | None) -> UUID | AccountFailure:
-        state: Final = self.store.read()
+    def selection(
+        self, route: str, previous_response_id: str | None, snapshot: AccountsState | None = None
+    ) -> UUID | AccountFailure:
+        state: Final = snapshot if snapshot is not None else self.store.read()
         previous_model_id: Final = (
             ResponsesAPIRequestUtils.get_model_id_from_response_id(previous_response_id)
             if previous_response_id
@@ -302,7 +338,192 @@ class AccountService:
         if previous_response_id and len(owners) != 1:
             return AccountFailure(code="unknown_response_owner", message="Start a new conversation.", status=409)
         target: Final = owners[0] if previous_response_id else selected_account(state.bindings, route)
+        if not previous_response_id and state.bindings.automatic_failover:
+            scope: Final = self.scope(state.bindings, route)
+            candidates: Final = (state.active_accounts.get(scope), target, *(item.id for item in state.accounts))
+            return self.choose_available(candidates, state, route=route)
         account: Final = next((item for item in state.accounts if item.id == target), None)
         if account is None or not account.enabled:
             return AccountFailure(code="account_unavailable", message="Choose an enabled ChatGPT account.", status=409)
         return account.id
+
+    @staticmethod
+    def scope(bindings: AccountBindings, route: str) -> str:
+        return route if bindings.routes.get(route) is not None else "default"
+
+    def choose_available(
+        self,
+        candidates: tuple[UUID | None, ...],
+        state: AccountsState,
+        healthy: frozenset[UUID] | None = None,
+        route: str | None = None,
+    ) -> UUID | AccountFailure:
+        now: Final = self.clock()
+        records: Final = {item.id: item for item in state.accounts}
+        model: Final = next((item.litellm_params.model for item in self.templates if item.model_name == route), None)
+        chosen: Final = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate is not None
+                and candidate in records
+                and (healthy is None or candidate in healthy)
+                and available(records[candidate], now, model)
+            ),
+            None,
+        )
+        if chosen is not None:
+            if records[chosen].unavailable_reason is not None or records[chosen].deployment_outages:
+                self.clear_cooldowns(chosen, model)
+            return chosen
+        retry_times: Final = tuple(
+            retry for item in state.accounts if (retry := next_attempt(item, now, model)) is not None
+        )
+        return AccountFailure(
+            retry_after=max(1, math.ceil(min(retry_times) - now)) if retry_times else None,
+            code="chatgpt_accounts_unavailable",
+            message="No ChatGPT account is available. Check account status and retry time, or sign in again.",
+            status=503,
+        )
+
+    def retry_selection(
+        self, preferred: UUID, scope: str, healthy: frozenset[UUID], route: str | None = None
+    ) -> UUID | AccountFailure:
+        state: Final = self.store.read()
+        candidates: Final = (preferred, state.active_accounts.get(scope), *(item.id for item in state.accounts))
+        return self.choose_available(candidates, state, healthy, route)
+
+    def activate(self, account_id: UUID, scope: str, revision: int) -> None:
+        snapshot: Final = self.store.read()
+        if snapshot.revision != revision or not snapshot.bindings.automatic_failover:
+            return
+        if snapshot.active_accounts.get(scope) == account_id:
+            return
+
+        def activate(state: AccountsState) -> AccountsState:
+            if state.revision != revision or not state.bindings.automatic_failover:
+                return state
+            previous: Final = state.active_accounts.get(scope) or (
+                state.bindings.default_account_id if scope == "default" else selected_account(state.bindings, scope)
+            )
+            record: Final = next((item for item in state.accounts if item.id == previous), None)
+            changed: Final = previous is not None and previous != account_id
+            switch: Final = (
+                AccountSwitch(
+                    previous=previous,
+                    current=account_id,
+                    reason=record.unavailable_reason
+                    if record and record.unavailable_reason
+                    else "deployment_unavailable",
+                    at=self.clock(),
+                )
+                if changed and previous is not None
+                else None
+            )
+            return state.model_copy(
+                update={
+                    "active_accounts": {**state.active_accounts, scope: account_id},
+                    "last_switches": {**state.last_switches, **({scope: switch} if switch else {})},
+                }
+            )
+
+        result: Final = self.store.update(activate, advance_revision=False)
+        if isinstance(result, AccountsState) and (event := result.last_switches.get(scope)) is not None:
+            if snapshot.active_accounts.get(scope) != event.current:
+                accounts_logger.info(
+                    "ChatGPT accounts account_switched scope=%s previous=%s current=%s reason=%s",
+                    scope,
+                    event.previous,
+                    event.current,
+                    event.reason,
+                )
+
+    def clear_cooldowns(self, account_id: UUID, model: str | None = None) -> None:
+        cache: Final = self.router.cooldown_cache
+        for template in self.templates:
+            if model is None or template.litellm_params.model == model:
+                cache.cooldown_store.delete_cache(cache.get_cooldown_cache_key(deployment_id(account_id, template)))
+
+    def clear_recovered_cooldowns(self, model: str | None) -> None:
+        for account in self.store.read().accounts:
+            if (account.unavailable_reason is not None or account.deployment_outages) and available(
+                account, self.clock(), model
+            ):
+                self.clear_cooldowns(account.id, model)
+
+    def record_outage(self, account_id: UUID, outage: AccountOutage, model: str | None = None) -> None:
+        account: Final = self.record(account_id)
+        if account is None:
+            return
+        if outage.scope == "deployment" and model:
+
+            def failed_deployment(state: AccountsState) -> AccountsState:
+                return state.model_copy(
+                    update={
+                        "accounts": tuple(
+                            item.model_copy(
+                                update={
+                                    "deployment_outages": {
+                                        **item.deployment_outages,
+                                        model: outage.model_copy(update={"since": self.clock()}),
+                                    }
+                                }
+                            )
+                            if item.id == account_id
+                            else item
+                            for item in state.accounts
+                        )
+                    }
+                )
+
+            self.store.update(failed_deployment, advance_revision=False)
+            self.clear_recovered_cooldowns(model)
+            return
+        self.update_account(
+            account_id,
+            {
+                "status": outage.status,
+                "error_code": outage.code,
+                "retry_at": outage.retry_at,
+                "unavailable_reason": outage.reason,
+                "unavailable_since": self.clock(),
+                "unavailable_until": outage.until,
+            },
+            advance_revision=False,
+        )
+        self.clear_recovered_cooldowns(model)
+
+    def record_success(self, account_id: UUID, started_at: float, model: str | None = None) -> None:
+        account: Final = self.record(account_id)
+        if account is None or not account.enabled or (account.status == "ready" and not account.deployment_outages):
+            return
+
+        def recovered(state: AccountsState) -> AccountsState:
+            return state.model_copy(
+                update={
+                    "accounts": tuple(
+                        item.model_copy(
+                            update={
+                                "status": "ready",
+                                "error_code": None,
+                                "retry_at": None,
+                                "unavailable_reason": None,
+                                "unavailable_since": None,
+                                "unavailable_until": None,
+                                "deployment_outages": {
+                                    key: value
+                                    for key, value in item.deployment_outages.items()
+                                    if (model is not None and key != model) or started_at < value.since
+                                },
+                            }
+                        )
+                        if item.id == account_id
+                        and item.enabled
+                        and (item.unavailable_since is None or started_at >= item.unavailable_since)
+                        else item
+                        for item in state.accounts
+                    )
+                }
+            )
+
+        self.store.update(recovered, advance_revision=False)

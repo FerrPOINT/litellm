@@ -5,6 +5,18 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class AccountOutage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    reason: Literal["authentication", "payment", "access_denied", "quota", "provider_unavailable"]
+    status: Literal["login_required", "rate_limited", "error"]
+    code: str
+    retry_at: float | None
+    until: float | None
+    since: float = 0
+    scope: Literal["account", "deployment"] = "account"
+
+
 class AccountRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -20,13 +32,27 @@ class AccountRecord(BaseModel):
     last_checked_at: float | None = None
     error_code: str | None = None
     retry_at: float | None = None
+    unavailable_since: float | None = None
+    unavailable_until: float | None = None
+    unavailable_reason: str | None = None
+    deployment_outages: Mapping[str, AccountOutage] = Field(default_factory=dict)
 
 
 class AccountBindings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    automatic_failover: bool = False
     default_account_id: UUID | None = None
     routes: Mapping[str, UUID | None] = Field(default_factory=dict)
+
+
+class AccountSwitch(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    previous: UUID
+    current: UUID
+    reason: str
+    at: float
 
 
 class AccountsState(BaseModel):
@@ -36,6 +62,8 @@ class AccountsState(BaseModel):
     revision: int = 0
     accounts: tuple[AccountRecord, ...] = ()
     bindings: AccountBindings = Field(default_factory=AccountBindings)
+    active_accounts: Mapping[str, UUID] = Field(default_factory=dict)
+    last_switches: Mapping[str, AccountSwitch] = Field(default_factory=dict)
 
 
 class AccountFailure(BaseModel):
@@ -44,6 +72,7 @@ class AccountFailure(BaseModel):
     code: str
     message: str
     status: int = 400
+    retry_after: int | None = Field(default=None, ge=0)
 
 
 class LoginView(BaseModel):
