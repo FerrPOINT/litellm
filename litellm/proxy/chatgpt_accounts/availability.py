@@ -9,7 +9,7 @@ from openai import APIConnectionError, APIStatusError, AuthenticationError, Perm
 from pydantic import TypeAdapter
 
 from litellm.exceptions import ContentPolicyViolationError, PaymentRequiredError
-from litellm.litellm_core_utils.exception_mapping_utils import _get_response_headers
+from litellm.litellm_core_utils.exception_mapping_utils import get_exception_response_headers
 
 from .models import AccountOutage, AccountRecord
 
@@ -117,7 +117,7 @@ def classify_outage(exception: Exception, now: float) -> AccountOutage | None:
     if isinstance(exception, ContentPolicyViolationError):
         return None
     response: Final = exception.response if isinstance(exception, (APIStatusError, httpx.HTTPStatusError)) else None
-    headers: Final = _get_response_headers(exception)
+    headers: Final = get_exception_response_headers(exception)
     raw_status: Final = getattr(exception, "status_code", None)
     http_status: Final = (
         response.status_code if response is not None else raw_status if isinstance(raw_status, int) else None
