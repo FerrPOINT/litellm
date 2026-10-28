@@ -15,6 +15,7 @@ from litellm.proxy.chatgpt_accounts.models import (
 from litellm.proxy.chatgpt_accounts.service import AccountService, deployment_id
 from litellm.proxy.chatgpt_accounts.store import AccountStore, write_private_file
 from litellm.responses.utils import ResponsesAPIRequestUtils
+from litellm.router import Router
 
 
 class ReadyProbe:
@@ -25,6 +26,45 @@ class ReadyProbe:
 class DeniedProbe:
     async def check(self, auth_file: Path, models: tuple[str, ...]) -> ProbeResult:
         return ProbeResult(error=AccountFailure(code="model_denied", message="No model access", status=403))
+
+
+class PartialModelProbe:
+    def __init__(self, unavailable: str) -> None:
+        self.unavailable = unavailable
+
+    async def check(self, auth_file: Path, models: tuple[str, ...]) -> ProbeResult:
+        return ProbeResult(
+            models=tuple(model for model in models if model != self.unavailable), unavailable_models=(self.unavailable,)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unavailable", ("optional-model", "gpt-6.1-terra"))
+async def test_unavailable_direct_model_does_not_block_healthy_routes(
+    service: AccountService, unavailable: str
+) -> None:
+    router: Final = Router(
+        model_list=[
+            {"model_name": "main-dev", "litellm_params": {"model": "chatgpt/gpt-6.1-terra"}},
+            {"model_name": "app-test", "litellm_params": {"model": "chatgpt/gpt-6-luna"}},
+            {"model_name": "optional", "litellm_params": {"model": "chatgpt/optional-model"}},
+        ]
+    )
+    partial: Final = AccountService(service.store, router, PartialModelProbe(unavailable))
+    target: Final = account(partial)
+    result: Final = await partial.bind(
+        AccountBindings(default_account_id=target, automatic_failover=True), partial.store.read().revision
+    )
+    if unavailable == "optional-model":
+        assert isinstance(result, AccountsState)
+        assert partial.selection("main-dev", None) == target
+        assert partial.selection("app-test", None) == target
+        assert isinstance(partial.selection("optional", None), AccountFailure)
+        assert partial.store.read().accounts[0].deployment_outages["chatgpt/optional-model"].code == "model_unavailable"
+    else:
+        assert isinstance(result, AccountFailure)
+        assert result.code == "model_unavailable"
+        assert partial.store.read().bindings.default_account_id is None
 
 
 def account(service: AccountService, label: str = "Personal") -> UUID:
@@ -251,6 +291,7 @@ async def test_automatic_failover_does_not_retarget_response_continuations(servi
 async def test_deployment_outage_keeps_the_same_accounts_other_model_available(service: AccountService) -> None:
     import httpx
     from openai import APIStatusError
+
     from litellm.proxy.chatgpt_accounts.availability import classify_outage
 
     first: Final = account(service)
@@ -287,6 +328,8 @@ async def test_selecting_a_working_account_does_not_require_a_broken_reserve_to_
             return ProbeResult(error=AccountFailure(code="login_required", message="Sign in again", status=401))
 
     managed: Final = AccountService(service.store, service.router, WorkingAccountProbe())
-    bound: Final = await managed.bind(AccountBindings(default_account_id=second, automatic_failover=True), managed.store.read().revision)
+    bound: Final = await managed.bind(
+        AccountBindings(default_account_id=second, automatic_failover=True), managed.store.read().revision
+    )
     assert isinstance(bound, AccountsState)
     assert managed.selection("main-dev", None) == second

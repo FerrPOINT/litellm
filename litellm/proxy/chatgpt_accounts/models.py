@@ -91,6 +91,7 @@ class ProbeResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     models: tuple[str, ...] = ()
+    unavailable_models: tuple[str, ...] = ()
     error: AccountFailure | None = None
 
 

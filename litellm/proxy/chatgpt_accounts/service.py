@@ -82,6 +82,8 @@ class OpenAIAccountProbe:
                     error=AccountFailure(code="no_models", message="The account has no available models.")
                 )
             for model in required:
+                if model not in slugs:
+                    continue
                 if (
                     not isinstance(
                         result := await litellm.aresponses(
@@ -98,7 +100,9 @@ class OpenAIAccountProbe:
                     return ProbeResult(
                         error=AccountFailure(code="empty_response", message="The model returned no output.")
                     )
-            return ProbeResult(models=slugs)
+            return ProbeResult(
+                models=slugs, unavailable_models=tuple(model for model in required if model not in slugs)
+            )
         except (httpx.HTTPError, OpenAIError, ValueError, OSError, GetAccessTokenError) as exc:
             status: Final = getattr(exc, "status_code", None)
             return ProbeResult(
@@ -224,6 +228,8 @@ class AccountService:
         if result.error is None:
             self.clear_cooldowns(account_id)
         saved: Final = self.update_account(account_id, updates, advance_revision=False)
+        if result.error is None:
+            self.record_model_access(account_id, result)
         return result.error if result.error else saved
 
     async def bind(self, bindings: AccountBindings, revision: int) -> AccountsState | AccountFailure:
@@ -270,9 +276,37 @@ class AccountService:
         )
         result: Final = await self.probe.check(self.store.auth_file(account_id), required)
         if result.error is None:
+            required_routes: Final = frozenset(
+                template.litellm_params.model.removeprefix("chatgpt/")
+                for template in self.templates
+                if template.model_name in ("main-dev", "app-test")
+                and selected_account(bindings, template.model_name) == account_id
+            )
+            if required_routes.intersection(result.unavailable_models):
+                return AccountFailure(
+                    code="model_unavailable",
+                    message="The selected account cannot access a required route model.",
+                    status=409,
+                )
             self.record_success(account_id, self.clock())
             self.clear_cooldowns(account_id)
+            self.record_model_access(account_id, result)
         return result.error
+
+    def record_model_access(self, account_id: UUID, result: ProbeResult) -> None:
+        for model in result.unavailable_models:
+            self.record_outage(
+                account_id,
+                AccountOutage(
+                    reason="access_denied",
+                    status="error",
+                    code="model_unavailable",
+                    retry_at=None,
+                    until=None,
+                    scope="deployment",
+                ),
+                "chatgpt/" + model,
+            )
 
     def update_account(
         self, account_id: UUID, updates: Mapping[str, object], *, advance_revision: bool = True
