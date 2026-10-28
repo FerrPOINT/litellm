@@ -34,6 +34,33 @@ async def test_snapshot_survives_switch_and_client_metadata_is_not_authoritative
 
 
 @pytest.mark.asyncio
+async def test_retry_chooses_an_untried_account_even_if_the_first_is_ready(service) -> None:
+    first: Final = account(service)
+    second: Final = account(service)
+    assert isinstance(
+        await service.bind(
+            AccountBindings(default_account_id=first, automatic_failover=True), service.store.read().revision
+        ),
+        AccountsState,
+    )
+    hook: Final = AccountsRoutingHook(service)
+    request: Final = await hook.async_pre_call_hook(None, None, {"model": "main-dev"}, "aresponses")
+    assert request is not None
+    deployments: Final = service.router.get_model_list(model_name="main-dev")
+    retried: Final = await hook.async_filter_deployments(
+        "main-dev",
+        deployments,
+        None,
+        {**request, "_retry_skipped_deployment_ids": (deployment_id(first, service.templates[0]),)},
+    )
+    assert retried
+    assert all(item["model_info"]["managed_chatgpt_account_id"] == str(second) for item in retried)
+    independent: Final = await hook.async_filter_deployments("main-dev", deployments, None, request)
+    assert independent
+    assert all(item["model_info"]["managed_chatgpt_account_id"] == str(first) for item in independent)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [{"api_key": "other"}, {"chatgpt_auth_file": "/tmp/stolen"}, {"extra_headers": {"ChatGPT-Account-Id": "other"}}],

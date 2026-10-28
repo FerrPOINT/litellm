@@ -15,6 +15,7 @@ from .models import ACCOUNT_ID_FIELD, ACCOUNT_METADATA_KEY, AccountFailure
 from .service import AccountService, accounts_logger, deployment_id
 
 _OBJECT_MAP: Final = TypeAdapter(dict[str, object])
+_RETRY_IDS: Final = TypeAdapter(tuple[str, ...])
 _CREDENTIAL_FIELDS: Final = frozenset(
     {
         "chatgpt_auth_file",
@@ -148,9 +149,15 @@ class AccountsRoutingHook(CustomLogger):
                 409, detail={"code": "account_not_resolved", "message": "No managed account was selected."}
             )
         metadata: Final = _metadata(request_kwargs or {})
+        skipped: Final = _RETRY_IDS.validate_python((request_kwargs or {}).get("_retry_skipped_deployment_ids") or ())
+        candidates: Final = tuple(
+            deployment
+            for deployment in healthy_deployments
+            if _mapping(deployment.get("model_info")).get("id") not in skipped
+        )
         healthy: Final = frozenset(
             UUID(value)
-            for deployment in healthy_deployments
+            for deployment in candidates
             if isinstance(value := _mapping(deployment.get("model_info")).get(ACCOUNT_ID_FIELD), str)
         )
         scope: Final = metadata.get("_managed_chatgpt_scope")
@@ -169,7 +176,7 @@ class AccountsRoutingHook(CustomLogger):
             )
         return [
             dict(deployment)
-            for deployment in healthy_deployments
+            for deployment in candidates
             if _mapping(deployment.get("model_info")).get(ACCOUNT_ID_FIELD) == str(selected)
         ]
 
