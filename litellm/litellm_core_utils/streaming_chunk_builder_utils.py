@@ -50,6 +50,7 @@ from litellm.types.utils import (
     TextCompletionResponse,
     UnreportedUsage,
     Usage,
+    collect_usage_metadata,
 )
 from litellm.utils import print_verbose, token_counter
 
@@ -227,6 +228,18 @@ def attach_cache_creation_token_details(
     if existing is not None:
         return prompt_tokens_details
     return prompt_tokens_details.model_copy(update={"cache_creation_token_details": cache_creation_token_details})
+
+
+def preserve_cache_write_tokens_details(
+    previous: PromptTokensDetailsWrapper | None,
+    incoming: PromptTokensDetailsWrapper | None,
+) -> PromptTokensDetailsWrapper | None:
+    if incoming is None:
+        return previous
+    previous_details: Final = getattr(previous, "cache_write_tokens_details", None)
+    if previous_details is None or getattr(incoming, "cache_write_tokens_details", None) is not None:
+        return incoming
+    return incoming.model_copy(update={"cache_write_tokens_details": previous_details})
 
 
 def apply_grounding_request_counts(
@@ -978,7 +991,9 @@ class ChunkProcessor:
                     if chunk_google_maps_grounding_requests is not None:
                         google_maps_grounding_requests = chunk_google_maps_grounding_requests
 
-                prompt_tokens_details = usage_chunk_dict["prompt_tokens_details"] or prompt_tokens_details
+                prompt_tokens_details = preserve_cache_write_tokens_details(
+                    prompt_tokens_details, usage_chunk_dict["prompt_tokens_details"]
+                )
 
                 cache_creation_token_details = capture_cache_creation_token_details(
                     prompt_tokens_details, cache_creation_token_details
@@ -1208,14 +1223,9 @@ class ChunkProcessor:
         reported_usages: Final = (
             usage_chunk for chunk in chunks if (usage_chunk := self.extract_usage_chunk(chunk)) is not None
         )
-        upstream_usage_fields: Final = dict(
-            chain.from_iterable(usage.model_dump(exclude=set(Usage.model_fields)).items() for usage in reported_usages)
-        )
-        returned_usage = Usage.model_validate(
-            {**upstream_usage_fields, **returned_usage.model_dump(), **provider_pricing_fields}
-        )
+        returned_usage = Usage.model_validate({**returned_usage.model_dump(), **provider_pricing_fields})
 
-        return returned_usage
+        return returned_usage.model_copy(update=collect_usage_metadata(chain(reported_usages, (returned_usage,))))
 
 
 def concatenate_base64_list(base64_strings: Sequence[str]) -> str:

@@ -32,7 +32,10 @@ from litellm.types.utils import (
 
 
 @pytest.mark.parametrize("cached,created", [(17, 9), (0, 0)])
-def test_stream_chunk_builder_preserves_provider_cache_usage(cached: int, created: int) -> None:
+@pytest.mark.parametrize("partial_final_usage", [False, True])
+def test_stream_chunk_builder_preserves_provider_cache_usage(
+    cached: int, created: int, partial_final_usage: bool
+) -> None:
     attribution: Final = {"items": {"fixture": {"cached_tokens": cached, "cache_write_tokens": created}}}
     details: Final = {"ttl_30m_tokens": created, "ttl_12h_tokens": 0}
     usage: Final = Usage.model_validate(
@@ -56,6 +59,17 @@ def test_stream_chunk_builder_preserves_provider_cache_usage(cached: int, create
                 usage=Usage(prompt_tokens=10, completion_tokens=1),
             ),
             ModelResponseStream(model="gpt-4o", choices=[], usage=usage),
+            ModelResponseStream(
+                model="gpt-4o",
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=3,
+                    prompt_tokens_details={"cached_tokens": cached, "cache_write_tokens": created},
+                )
+                if partial_final_usage
+                else None,
+            ),
         ]
     )
     assert response is not None
@@ -66,6 +80,36 @@ def test_stream_chunk_builder_preserves_provider_cache_usage(cached: int, create
     assert result["prompt_tokens_details"]["cache_write_tokens_details"] == details
     assert result["attribution"] == attribution
     assert usage.model_dump()["attribution"] == attribution
+
+
+@pytest.mark.parametrize("earlier,latest", [(0, 80), (80, 0)])
+@pytest.mark.parametrize("legacy_final", [False, True])
+def test_stream_chunk_builder_keeps_latest_normalized_cache_count(
+    earlier: int, latest: int, legacy_final: bool
+) -> None:
+    response: Final = stream_chunk_builder(
+        chunks=[
+            ModelResponseStream(model="fixture", choices=[], usage=Usage(prompt_cache_hit_tokens=earlier)),
+            ModelResponseStream(
+                model="fixture",
+                choices=[StreamingChoices(index=0, delta=Delta(content="fixture"))],
+                usage=Usage.model_validate(
+                    {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 3,
+                        **(
+                            {"prompt_cache_hit_tokens": latest}
+                            if legacy_final
+                            else {"prompt_tokens_details": {"cached_tokens": latest}}
+                        ),
+                    }
+                ),
+            ),
+        ]
+    )
+    assert response is not None
+    assert response.usage.prompt_tokens_details.cached_tokens == latest
+    assert "prompt_cache_hit_tokens" not in response.usage.model_dump()
 
 
 def test_get_combined_tool_content():

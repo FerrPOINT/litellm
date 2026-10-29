@@ -1955,7 +1955,8 @@ def test_has_any_special_delta_attributes(
 
 
 @pytest.mark.parametrize("cached,created", [(17, 9), (0, 0)])
-def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: int) -> None:
+@pytest.mark.parametrize("partial_final_usage", [False, True])
+def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: int, partial_final_usage: bool) -> None:
     from litellm.litellm_core_utils.streaming_handler import calculate_total_usage
     from litellm.responses.utils import ResponseAPILoggingUtils
 
@@ -1977,7 +1978,16 @@ def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: 
         [
             ModelResponseStream(choices=[], usage=Usage(prompt_tokens=10, completion_tokens=1)),
             ModelResponseStream(choices=[], usage=reported),
-            ModelResponseStream(choices=[]),
+            ModelResponseStream(
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=3,
+                    prompt_tokens_details={"cached_tokens": cached, "cache_write_tokens": created},
+                )
+                if partial_final_usage
+                else None,
+            ),
         ]
     ).model_dump()
     assert result["prompt_tokens"] == 100
@@ -1986,6 +1996,106 @@ def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: 
     assert result["prompt_tokens_details"]["cache_write_tokens_details"] == details
     assert result["attribution"] == attribution
     assert reported.model_dump()["attribution"] == attribution
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("earlier,latest", [(0, 80), (80, 0)])
+async def test_public_stream_preserves_partial_cache_metadata(asynchronous: bool, earlier: int, latest: int) -> None:
+    import httpx
+    from openai import AsyncOpenAI, OpenAI
+
+    details: Final = {"ttl_30m_tokens": 4, "ttl_12h_tokens": 5}
+    attribution: Final = {"items": {"fixture": {"cache_write_tokens": 9}}}
+    base: Final = {
+        "id": "chatcmpl-cache-test",
+        "created": 1754900000,
+        "model": "fixture",
+        "object": "chat.completion.chunk",
+    }
+    events: Final = (
+        {
+            **base,
+            "choices": [{"index": 0, "delta": {"content": "fixture"}, "finish_reason": None}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 1,
+                "total_tokens": 101,
+                "prompt_cache_hit_tokens": earlier,
+                "prompt_tokens_details": {"cache_write_tokens": 9, "cache_write_tokens_details": details},
+                "attribution": attribution,
+            },
+        },
+        {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        {
+            **base,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 3,
+                "total_tokens": 103,
+                "prompt_tokens_details": {"cached_tokens": latest, "cache_write_tokens": 9},
+            },
+        },
+    )
+    wire: Final = "".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n"
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=wire.encode())
+
+    if asynchronous:
+        async with AsyncOpenAI(
+            api_key="fixture", http_client=httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        ) as client:
+            stream = await litellm.acompletion(
+                model="openai/fixture",
+                client=client,
+                messages=[{"role": "user", "content": "fixture"}],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            usages = [chunk.usage.model_dump() async for chunk in stream if getattr(chunk, "usage", None)]
+    else:
+        with OpenAI(api_key="fixture", http_client=httpx.Client(transport=httpx.MockTransport(upstream))) as client:
+            stream = litellm.completion(
+                model="openai/fixture",
+                client=client,
+                messages=[{"role": "user", "content": "fixture"}],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            usages = [chunk.usage.model_dump() for chunk in stream if getattr(chunk, "usage", None)]
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens_details"]["cached_tokens"] == latest
+    assert usages[0]["prompt_tokens_details"]["cache_write_tokens_details"] == details
+    assert usages[0]["attribution"] == attribution
+    assert usages[0]["total_tokens"] == 103
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+def test_final_usage_keeps_latest_explicit_zero_cache_lifetimes(as_dict: bool) -> None:
+    from litellm.litellm_core_utils.streaming_handler import calculate_total_usage
+
+    earlier: Final = {
+        "cached_tokens": 17,
+        "cache_write_tokens": 9,
+        "cache_write_tokens_details": {"ttl_30m_tokens": 4, "ttl_12h_tokens": 5},
+    }
+    latest: Final = {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_write_tokens_details": {"ttl_30m_tokens": 0, "ttl_12h_tokens": 0},
+    }
+    records: Final = (
+        {"prompt_tokens": 100, "completion_tokens": 1, "prompt_tokens_details": earlier},
+        {"prompt_tokens": 100, "completion_tokens": 3, "prompt_tokens_details": latest},
+    )
+    chunks: Final = [{"usage": record if as_dict else Usage(**record)} for record in records]
+    result: Final = calculate_total_usage(chunks).model_dump()
+    assert result["prompt_tokens_details"]["cache_write_tokens_details"] == latest["cache_write_tokens_details"]
+    assert result["prompt_tokens_details"]["cached_tokens"] == 0
+    assert result["prompt_tokens_details"]["cache_creation_token_details"]["ephemeral_30m_input_tokens"] == 0
+    assert result["prompt_tokens_details"]["cache_creation_token_details"]["ephemeral_12h_input_tokens"] == 0
 
 
 def test_calculate_total_usage_with_cost():

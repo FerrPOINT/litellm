@@ -1,9 +1,10 @@
 import json
 import re
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from itertools import chain
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
@@ -1825,6 +1826,14 @@ class CacheCreationTokenDetails(LiteLLMBaseModel):
     ephemeral_12h_input_tokens: int | None = None
 
 
+def _cache_write_lifetimes(details: CacheWriteTokensDetails | None) -> CacheCreationTokenDetails | None:
+    if details is None:
+        return None
+    return CacheCreationTokenDetails(
+        ephemeral_30m_input_tokens=details.ttl_30m_tokens, ephemeral_12h_input_tokens=details.ttl_12h_tokens
+    )
+
+
 class PromptTokensDetailsWrapper(
     SafeAttributeModel, PromptTokensDetails
 ):  # extends with image generation fields (text_tokens, image_tokens)
@@ -1895,6 +1904,9 @@ class PromptTokensDetailsWrapper(
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         extra_fields: Final = self.model_extra
+        self.cache_creation_token_details = self.cache_creation_token_details or _cache_write_lifetimes(
+            self.cache_write_tokens_details
+        )
         nested_cache_creation_input_tokens: Final = (
             extra_fields.get("cache_creation_input_tokens") if extra_fields is not None else None
         )
@@ -2097,6 +2109,17 @@ class Usage(SafeAttributeModel, CompletionUsage):
     def __setitem__(self, key, value) -> None:
         # Allow dictionary-style assignment of attributes
         setattr(self, key, value)
+
+
+def collect_usage_metadata(usages: Iterable[Usage | Mapping[str, object]]) -> Mapping[str, object]:
+    normalized_fields: Final = frozenset(Usage.model_fields).union(
+        ("prompt_cache_hit_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "reasoning_tokens")
+    )
+    payloads: Final[Iterable[Mapping[str, object]]] = (
+        usage.model_dump() if isinstance(usage, Usage) else usage for usage in usages
+    )
+    items: Final = chain.from_iterable(payload.items() for payload in payloads)
+    return MappingProxyType({key: value for key, value in items if key not in normalized_fields})
 
 
 class UnreportedUsage(Usage):
