@@ -1,16 +1,21 @@
 import asyncio
+import math
 import os
 from typing import Final
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from litellm.constants import DEFAULT_REQUEST_TIMEOUT_SECONDS
+
 
 class AccountsRequestDeadline:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        self.seconds = min(600.0, float(os.environ.get("LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT", "600")))
-        if self.seconds <= 0:
+        self.seconds = float(
+            os.environ.get("LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT", str(DEFAULT_REQUEST_TIMEOUT_SECONDS))
+        )
+        if not math.isfinite(self.seconds) or self.seconds <= 0:
             raise ValueError("ChatGPT accounts request timeout must be positive")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
