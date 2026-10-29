@@ -486,6 +486,28 @@ class TestResponseAPILoggingUtils:
         assert restored["cache_write_tokens"] == short_write + long_write
         assert restored["cache_write_tokens_details"] == cache_details
 
+    @pytest.mark.parametrize("cache_read,short_write,long_write", [(17, 4, 5), (0, 0, 0)])
+    def test_provider_constructed_dict_details_keep_cache_metadata(
+        self, cache_read: int, short_write: int, long_write: int
+    ) -> None:
+        details: Final = {
+            "cached_tokens": cache_read,
+            "cache_write_tokens": short_write + long_write,
+            "cache_write_tokens_details": {"ttl_30m_tokens": short_write, "ttl_12h_tokens": long_write},
+        }
+        # SDK-style construction can retain nested wire dictionaries without validation.
+        source: Final = ResponseAPIUsage.model_construct(
+            input_tokens=100, output_tokens=3, total_tokens=103, input_tokens_details=details
+        )
+        converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(source)
+        wire_details: Final = converted.model_dump()["prompt_tokens_details"]
+        assert wire_details["cached_tokens"] == cache_read
+        assert wire_details["cache_write_tokens"] == short_write + long_write
+        assert wire_details["cache_write_tokens_details"] == details["cache_write_tokens_details"]
+        assert wire_details["cache_creation_token_details"]["ephemeral_30m_input_tokens"] == short_write
+        assert wire_details["cache_creation_token_details"]["ephemeral_12h_input_tokens"] == long_write
+        assert source.input_tokens_details is details
+
     def test_unreported_cache_write_details_are_not_invented(self) -> None:
         converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(
             {"input_tokens": 100, "output_tokens": 3, "input_tokens_details": {"cached_tokens": 17}}
