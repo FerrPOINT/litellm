@@ -1956,7 +1956,10 @@ def test_has_any_special_delta_attributes(
 
 @pytest.mark.parametrize("cached,created", [(17, 9), (0, 0)])
 @pytest.mark.parametrize("partial_final_usage", [False, True])
-def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: int, partial_final_usage: bool) -> None:
+@pytest.mark.parametrize("as_dict", [False, True])
+def test_final_stream_usage_keeps_provider_cache_metadata(
+    cached: int, created: int, partial_final_usage: bool, as_dict: bool
+) -> None:
     from litellm.litellm_core_utils.streaming_handler import calculate_total_usage
     from litellm.responses.utils import ResponseAPILoggingUtils
 
@@ -1974,22 +1977,22 @@ def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: 
             "attribution": attribution,
         }
     )
-    result: Final = calculate_total_usage(
-        [
-            ModelResponseStream(choices=[], usage=Usage(prompt_tokens=10, completion_tokens=1)),
-            ModelResponseStream(choices=[], usage=reported),
-            ModelResponseStream(
-                choices=[],
-                usage=Usage(
-                    prompt_tokens=100,
-                    completion_tokens=3,
-                    prompt_tokens_details={"cached_tokens": cached, "cache_write_tokens": created},
-                )
-                if partial_final_usage
-                else None,
-            ),
-        ]
-    ).model_dump()
+    chunks: Final = [
+        ModelResponseStream(choices=[], usage=Usage(prompt_tokens=10, completion_tokens=1)),
+        ModelResponseStream(choices=[], usage=reported),
+        ModelResponseStream(
+            choices=[],
+            usage=Usage(
+                prompt_tokens=100,
+                completion_tokens=3,
+                prompt_tokens_details={"cached_tokens": cached, "cache_write_tokens": created},
+            )
+            if partial_final_usage
+            else None,
+        ),
+    ]
+    wire_chunks: Final = [chunk.model_dump() for chunk in chunks] if as_dict else chunks
+    result: Final = calculate_total_usage(wire_chunks).model_dump()
     assert result["prompt_tokens"] == 100
     assert result["total_tokens"] == 103
     assert result["prompt_tokens_details"]["cached_tokens"] == cached

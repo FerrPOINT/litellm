@@ -112,6 +112,44 @@ def test_stream_chunk_builder_keeps_latest_normalized_cache_count(
     assert "prompt_cache_hit_tokens" not in response.usage.model_dump()
 
 
+def test_stream_chunk_builder_keeps_newer_zero_cache_lifetimes() -> None:
+    response = stream_chunk_builder(
+        chunks=[
+            ModelResponseStream(
+                model="fixture",
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=1,
+                    prompt_tokens_details={
+                        "cache_write_tokens": 9,
+                        "cache_write_tokens_details": {"ttl_30m_tokens": 4, "ttl_12h_tokens": 5},
+                    },
+                ),
+            ),
+            ModelResponseStream(
+                model="fixture",
+                choices=[StreamingChoices(index=0, delta=Delta(content="fixture"))],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=3,
+                    prompt_tokens_details={
+                        "cache_write_tokens": 0,
+                        "cache_write_tokens_details": {"ttl_30m_tokens": 0, "ttl_12h_tokens": 0},
+                    },
+                ),
+            ),
+        ]
+    )
+    assert response is not None
+    details = response.usage.prompt_tokens_details
+    assert details.cache_write_tokens == 0
+    assert details.cache_write_tokens_details.ttl_30m_tokens == 0
+    assert details.cache_write_tokens_details.ttl_12h_tokens == 0
+    assert details.cache_creation_token_details.ephemeral_30m_input_tokens == 0
+    assert details.cache_creation_token_details.ephemeral_12h_input_tokens == 0
+
+
 def test_get_combined_tool_content():
     chunks = [
         ModelResponseStream(
