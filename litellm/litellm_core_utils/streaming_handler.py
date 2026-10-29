@@ -2746,12 +2746,20 @@ def calculate_total_usage(chunks: Sequence[ModelResponse | ModelResponseStream])
                 or completion_tokens_details
             )
 
-    returned_usage_chunk: Final = Usage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        prompt_tokens_details=attach_cache_creation_token_details(prompt_tokens_details, cache_creation_token_details),
-        completion_tokens_details=completion_tokens_details,
+    upstream_usage_fields: Final[Mapping[str, object]] = (
+        latest_usage_chunk.model_dump() if isinstance(latest_usage_chunk, Usage) else latest_usage_chunk or {}
+    )
+    returned_usage_chunk: Final = Usage.model_validate(
+        {
+            **upstream_usage_fields,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": attach_cache_creation_token_details(
+                prompt_tokens_details, cache_creation_token_details
+            ),
+            "completion_tokens_details": completion_tokens_details,
+        }
     )
 
     if latest_usage_chunk is not None:

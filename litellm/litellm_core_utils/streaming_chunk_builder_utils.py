@@ -1205,7 +1205,15 @@ class ChunkProcessor:
             if value is not None
         }
 
-        returned_usage = Usage(**returned_usage.model_dump(), **provider_pricing_fields)
+        reported_usages: Final = (
+            usage_chunk for chunk in chunks if (usage_chunk := self.extract_usage_chunk(chunk)) is not None
+        )
+        upstream_usage_fields: Final = dict(
+            chain.from_iterable(usage.model_dump(exclude=set(Usage.model_fields)).items() for usage in reported_usages)
+        )
+        returned_usage = Usage.model_validate(
+            {**upstream_usage_fields, **returned_usage.model_dump(), **provider_pricing_fields}
+        )
 
         return returned_usage
 

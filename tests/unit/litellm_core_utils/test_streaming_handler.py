@@ -1954,6 +1954,40 @@ def test_has_any_special_delta_attributes(
     assert result is False
 
 
+@pytest.mark.parametrize("cached,created", [(17, 9), (0, 0)])
+def test_final_stream_usage_keeps_provider_cache_metadata(cached: int, created: int) -> None:
+    from litellm.litellm_core_utils.streaming_handler import calculate_total_usage
+    from litellm.responses.utils import ResponseAPILoggingUtils
+
+    attribution: Final = {"items": {"fixture": {"cached_tokens": cached, "cache_write_tokens": created}}}
+    details: Final = {"ttl_30m_tokens": created, "ttl_12h_tokens": 0}
+    reported: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(
+        {
+            "input_tokens": 100,
+            "output_tokens": 3,
+            "input_tokens_details": {
+                "cached_tokens": cached,
+                "cache_write_tokens": created,
+                "cache_write_tokens_details": details,
+            },
+            "attribution": attribution,
+        }
+    )
+    result: Final = calculate_total_usage(
+        [
+            ModelResponseStream(choices=[], usage=Usage(prompt_tokens=10, completion_tokens=1)),
+            ModelResponseStream(choices=[], usage=reported),
+            ModelResponseStream(choices=[]),
+        ]
+    ).model_dump()
+    assert result["prompt_tokens"] == 100
+    assert result["total_tokens"] == 103
+    assert result["prompt_tokens_details"]["cached_tokens"] == cached
+    assert result["prompt_tokens_details"]["cache_write_tokens_details"] == details
+    assert result["attribution"] == attribution
+    assert reported.model_dump()["attribution"] == attribution
+
+
 def test_calculate_total_usage_with_cost():
     from litellm.litellm_core_utils.streaming_handler import calculate_total_usage
 

@@ -31,6 +31,43 @@ from litellm.types.utils import (
 )
 
 
+@pytest.mark.parametrize("cached,created", [(17, 9), (0, 0)])
+def test_stream_chunk_builder_preserves_provider_cache_usage(cached: int, created: int) -> None:
+    attribution: Final = {"items": {"fixture": {"cached_tokens": cached, "cache_write_tokens": created}}}
+    details: Final = {"ttl_30m_tokens": created, "ttl_12h_tokens": 0}
+    usage: Final = Usage.model_validate(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 3,
+            "total_tokens": 103,
+            "prompt_tokens_details": {
+                "cached_tokens": cached,
+                "cache_write_tokens": created,
+                "cache_write_tokens_details": details,
+            },
+            "attribution": attribution,
+        }
+    )
+    response: Final = stream_chunk_builder(
+        chunks=[
+            ModelResponseStream(
+                model="gpt-4o",
+                choices=[StreamingChoices(index=0, delta=Delta(content="fixture"))],
+                usage=Usage(prompt_tokens=10, completion_tokens=1),
+            ),
+            ModelResponseStream(model="gpt-4o", choices=[], usage=usage),
+        ]
+    )
+    assert response is not None
+    result: Final = response.usage.model_dump()
+    assert result["prompt_tokens"] == 100
+    assert result["total_tokens"] == 103
+    assert result["prompt_tokens_details"]["cached_tokens"] == cached
+    assert result["prompt_tokens_details"]["cache_write_tokens_details"] == details
+    assert result["attribution"] == attribution
+    assert usage.model_dump()["attribution"] == attribution
+
+
 def test_get_combined_tool_content():
     chunks = [
         ModelResponseStream(

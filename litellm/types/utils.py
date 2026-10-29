@@ -83,6 +83,7 @@ from .llms.base import HiddenParams
 from .llms.openai import (
     AllMessageValues,
     Batch,
+    CacheWriteTokensDetails,
     ChatCompletionAnnotation,
     ChatCompletionReasoningItem,
     ChatCompletionRedactedThinkingBlock,
@@ -1877,6 +1878,8 @@ class PromptTokensDetailsWrapper(
     cache_type: str | None = None
     """Provider-reported cache mode. DashScope returns ``ephemeral`` for explicit Qwen Context Cache requests."""
 
+    cache_write_tokens_details: CacheWriteTokensDetails | None = None
+
     @field_validator("cache_type", mode="before")
     @classmethod
     def _drop_non_string_cache_type(cls, value: object) -> str | None:
@@ -1928,6 +1931,8 @@ class PromptTokensDetailsWrapper(
             del self.cache_creation_tokens
         if self.cache_creation_token_details is None:
             del self.cache_creation_token_details
+        if self.cache_write_tokens_details is None:
+            del self.cache_write_tokens_details
         if self.cached_tokens_details is None:
             del self.cached_tokens_details
         if self.cache_type is None:
