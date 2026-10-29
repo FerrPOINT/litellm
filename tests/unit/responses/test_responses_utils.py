@@ -1,14 +1,13 @@
-from importlib import import_module
 import base64
+from importlib import import_module
 from typing import Final
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 import litellm
-from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.litellm_core_utils.llm_cost_calc.utils import generic_cost_per_token
+from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.responses.litellm_completion_transformation.transformation import LiteLLMCompletionResponsesConfig
 from litellm.responses.utils import ResponseAPILoggingUtils, ResponsesAPIRequestUtils
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIOptionalRequestParams, ResponsesAPIResponse
@@ -452,6 +451,44 @@ class TestResponseAPILoggingUtils:
             + 2_000 * model_info["cache_creation_input_token_cost_above_12hr"]
         )
 
+    @pytest.mark.parametrize("as_model", [False, True])
+    @pytest.mark.parametrize("cache_read,short_write,long_write", [(17, 4, 5), (0, 0, 0)])
+    def test_provider_cache_details_survive_chat_usage_serialization_and_roundtrip(
+        self, as_model: bool, cache_read: int, short_write: int, long_write: int
+    ) -> None:
+        cache_details: Final = {"ttl_30m_tokens": short_write, "ttl_12h_tokens": long_write}
+        payload: Final = {
+            "input_tokens": 100,
+            "output_tokens": 3,
+            "total_tokens": 103,
+            "input_tokens_details": {
+                "cached_tokens": cache_read,
+                "cache_write_tokens": short_write + long_write,
+                "cache_write_tokens_details": cache_details,
+            },
+        }
+        source: Final = ResponseAPIUsage(**payload) if as_model else payload
+        converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(source)
+        wire_details: Final = converted.model_dump()["prompt_tokens_details"]
+        assert wire_details["cached_tokens"] == cache_read
+        assert wire_details["cache_write_tokens"] == short_write + long_write
+        assert wire_details["cache_write_tokens_details"] == cache_details
+        restored: Final = LiteLLMCompletionResponsesConfig.transform_chat_completion_usage_to_responses_usage(
+            Usage(**converted.model_dump())
+        ).model_dump()["input_tokens_details"]
+        assert restored["cached_tokens"] == cache_read
+        assert restored["cache_write_tokens"] == short_write + long_write
+        assert restored["cache_write_tokens_details"] == cache_details
+
+    def test_unreported_cache_write_details_are_not_invented(self) -> None:
+        converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(
+            {"input_tokens": 100, "output_tokens": 3, "input_tokens_details": {"cached_tokens": 17}}
+        )
+        wire_details: Final = converted.model_dump()["prompt_tokens_details"]
+        assert wire_details["cached_tokens"] == 17
+        assert "cache_write_tokens" not in wire_details
+        assert "cache_write_tokens_details" not in wire_details
+
     def test_transform_response_api_usage_mixed_details(self):
         """Test transformation handles mixed token details (cached + image + audio)."""
         # Setup - hypothetical usage with mixed token types
@@ -771,11 +808,13 @@ def test_responses_extra_body_forwarded_to_completion_transformation_handler():
     """
     with (
         patch.object(
-            import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config",
+            import_module("litellm.responses.main").ProviderConfigManager,
+            "get_provider_responses_api_config",
             return_value=None,
         ),
         patch.object(
-            import_module("litellm.responses.main").litellm_completion_transformation_handler, "response_api_handler",
+            import_module("litellm.responses.main").litellm_completion_transformation_handler,
+            "response_api_handler",
         ) as mock_handler,
     ):
         mock_handler.return_value = MagicMock()
@@ -802,11 +841,13 @@ def test_responses_maps_reasoning_effort_from_litellm_params_to_reasoning():
     """
     with (
         patch.object(
-            import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config",
+            import_module("litellm.responses.main").ProviderConfigManager,
+            "get_provider_responses_api_config",
             return_value=None,
         ),
         patch.object(
-            import_module("litellm.responses.main").litellm_completion_transformation_handler, "response_api_handler",
+            import_module("litellm.responses.main").litellm_completion_transformation_handler,
+            "response_api_handler",
         ) as mock_handler,
     ):
         mock_handler.return_value = MagicMock()
@@ -921,16 +962,14 @@ class TestResponsesInputToChatMessages:
         assert ResponsesAPIRequestUtils.responses_input_to_chat_messages(None) == []
 
     def test_str_input_becomes_user_message(self):
-        assert ResponsesAPIRequestUtils.responses_input_to_chat_messages("hi") == [
-            {"role": "user", "content": "hi"}
-        ]
+        assert ResponsesAPIRequestUtils.responses_input_to_chat_messages("hi") == [{"role": "user", "content": "hi"}]
 
     def test_list_input_keeps_only_role_items(self):
         reasoning_item = {"type": "reasoning", "id": "rs_1", "summary": []}
         user_message = {"role": "user", "content": "hi"}
-        assert ResponsesAPIRequestUtils.responses_input_to_chat_messages(
-            [reasoning_item, user_message, "stray"]
-        ) == [user_message]
+        assert ResponsesAPIRequestUtils.responses_input_to_chat_messages([reasoning_item, user_message, "stray"]) == [
+            user_message
+        ]
 
 
 class TestMergeProviderSpecificHeaders:
@@ -964,9 +1003,12 @@ class TestMergeProviderSpecificHeaders:
         assert merged == {"Authorization": "Bearer chatgpt-token"}
 
     def test_no_scoped_headers_returns_extra_headers_unchanged(self):
-        assert ResponsesAPIRequestUtils.merge_provider_specific_headers(
-            extra_headers=None, provider_specific_header=None, custom_llm_provider="chatgpt"
-        ) is None
+        assert (
+            ResponsesAPIRequestUtils.merge_provider_specific_headers(
+                extra_headers=None, provider_specific_header=None, custom_llm_provider="chatgpt"
+            )
+            is None
+        )
 
 
 def test_responses_object_bills_an_explicit_cache_hit_at_the_explicit_rate():

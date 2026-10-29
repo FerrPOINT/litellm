@@ -3733,6 +3733,7 @@ class LiteLLMCompletionResponsesConfig:
             response_usage.input_tokens_details = InputTokensDetails.model_validate(
                 {
                     "cached_tokens": prompt_details.cached_tokens if prompt_details.cached_tokens is not None else 0,
+                    "cache_write_tokens_details": getattr(prompt_details, "cache_write_tokens_details", None),
                     "text_tokens": prompt_details.text_tokens,
                     "audio_tokens": prompt_details.audio_tokens,
                     "image_tokens": prompt_details.image_tokens,

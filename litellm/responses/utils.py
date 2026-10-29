@@ -80,7 +80,7 @@ def _prompt_tokens_details_wrapper(details: object) -> PromptTokensDetailsWrappe
     if _is_object_dict(details):
         input_details: Final = InputTokensDetails.model_validate(details)
         return PromptTokensDetailsWrapper(
-            **input_details.model_dump(exclude={"cache_write_tokens_details"}),
+            **input_details.model_dump(),
             cache_creation_token_details=_cache_write_lifetimes(input_details.cache_write_tokens_details),
         )
     return PromptTokensDetailsWrapper(
@@ -91,6 +91,7 @@ def _prompt_tokens_details_wrapper(details: object) -> PromptTokensDetailsWrappe
         cached_tokens_details=getattr(details, "cached_tokens_details", None),
         video_tokens=getattr(details, "video_tokens", None),
         cache_write_tokens=getattr(details, "cache_write_tokens", None),
+        cache_write_tokens_details=getattr(details, "cache_write_tokens_details", None),
         cache_creation_token_details=_cache_write_lifetimes(getattr(details, "cache_write_tokens_details", None)),
         cache_type=getattr(details, "cache_type", None),
         web_search_requests=getattr(details, "web_search_requests", None),
