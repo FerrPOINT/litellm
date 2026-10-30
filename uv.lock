@@ -5146,7 +5146,6 @@ dev = [
     { name = "types-redis" },
     { name = "types-requests" },
     { name = "types-setuptools" },
-    { name = "tzdata" },
     { name = "vcrpy" },
 ]
 e2e-dev = [
@@ -5375,7 +5374,6 @@ dev = [
     { name = "types-redis", specifier = "==4.6.0.20241004" },
     { name = "types-requests", specifier = "==2.32.4.20260107" },
     { name = "types-setuptools", specifier = "==75.8.0.20250225" },
-    { name = "tzdata", specifier = "==2026.2" },
     { name = "vcrpy", specifier = "==8.2.1" },
 ]
 e2e-dev = [

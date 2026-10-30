@@ -1223,7 +1223,7 @@ class ChunkProcessor:
         reported_usages: Final = (
             usage_chunk for chunk in chunks if (usage_chunk := self.extract_usage_chunk(chunk)) is not None
         )
-        returned_usage = Usage.model_validate({**returned_usage.model_dump(), **provider_pricing_fields})
+        returned_usage = Usage(**returned_usage.model_dump(), **provider_pricing_fields)
 
         return returned_usage.model_copy(update=collect_usage_metadata(chain(reported_usages, (returned_usage,))))
 
