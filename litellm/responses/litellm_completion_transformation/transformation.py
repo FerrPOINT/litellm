@@ -122,6 +122,7 @@ from litellm.types.utils import (
     Message,
     ModelResponse,
     Usage,
+    collect_usage_metadata,
 )
 
 from .compaction_items import (
@@ -3688,10 +3689,13 @@ class LiteLLMCompletionResponsesConfig:
                 total_tokens=0,
             )
 
-        response_usage: Final = ResponseAPIUsage(
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
+        response_usage: Final = ResponseAPIUsage.model_validate(
+            {
+                **collect_usage_metadata((usage,)),
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            }
         )
 
         # Preserve cost field if it exists (for streaming usage with cost calculation)
@@ -3733,6 +3737,7 @@ class LiteLLMCompletionResponsesConfig:
             response_usage.input_tokens_details = InputTokensDetails.model_validate(
                 {
                     "cached_tokens": prompt_details.cached_tokens if prompt_details.cached_tokens is not None else 0,
+                    "cache_write_tokens_details": getattr(prompt_details, "cache_write_tokens_details", None),
                     "text_tokens": prompt_details.text_tokens,
                     "audio_tokens": prompt_details.audio_tokens,
                     "image_tokens": prompt_details.image_tokens,

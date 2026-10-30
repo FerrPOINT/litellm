@@ -27,7 +27,6 @@ from litellm.types.llms.openai import (
 )
 from litellm.types.responses.main import DecodedResponseId
 from litellm.types.utils import (
-    CacheCreationTokenDetails,
     CompletionTokensDetailsWrapper,
     PromptTokensDetailsWrapper,
     ProviderSpecificHeader,
@@ -55,17 +54,6 @@ def _output_token_detail(details: object, field: str) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _cache_write_lifetimes(cache_write_tokens_details: object) -> CacheCreationTokenDetails | None:
-    """OpenAI Responses splits `cache_write_tokens` into `ttl_30m_tokens` and `ttl_12h_tokens`."""
-    ttl_30m_tokens: Final = _output_token_detail(cache_write_tokens_details, "ttl_30m_tokens")
-    ttl_12h_tokens: Final = _output_token_detail(cache_write_tokens_details, "ttl_12h_tokens")
-    if ttl_30m_tokens is None and ttl_12h_tokens is None:
-        return None
-    return CacheCreationTokenDetails(
-        ephemeral_30m_input_tokens=ttl_30m_tokens, ephemeral_12h_input_tokens=ttl_12h_tokens
-    )
-
-
 def _is_object_sequence(value: object) -> TypeIs[Sequence[object]]:  # guard-ok: a list is a Sequence of anything
     return isinstance(value, list)
 
@@ -79,10 +67,7 @@ def _is_object_dict(
 def _prompt_tokens_details_wrapper(details: object) -> PromptTokensDetailsWrapper:
     if _is_object_dict(details):
         input_details: Final = InputTokensDetails.model_validate(details)
-        return PromptTokensDetailsWrapper(
-            **input_details.model_dump(exclude={"cache_write_tokens_details"}),
-            cache_creation_token_details=_cache_write_lifetimes(input_details.cache_write_tokens_details),
-        )
+        return PromptTokensDetailsWrapper(**input_details.model_dump())
     return PromptTokensDetailsWrapper(
         cached_tokens=getattr(details, "cached_tokens", None),
         audio_tokens=getattr(details, "audio_tokens", None),
@@ -91,7 +76,7 @@ def _prompt_tokens_details_wrapper(details: object) -> PromptTokensDetailsWrappe
         cached_tokens_details=getattr(details, "cached_tokens_details", None),
         video_tokens=getattr(details, "video_tokens", None),
         cache_write_tokens=getattr(details, "cache_write_tokens", None),
-        cache_creation_token_details=_cache_write_lifetimes(getattr(details, "cache_write_tokens_details", None)),
+        cache_write_tokens_details=getattr(details, "cache_write_tokens_details", None),
         cache_type=getattr(details, "cache_type", None),
         web_search_requests=getattr(details, "web_search_requests", None),
         google_maps_grounding_requests=getattr(details, "google_maps_grounding_requests", None),
