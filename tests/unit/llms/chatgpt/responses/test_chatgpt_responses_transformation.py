@@ -13,8 +13,12 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 
 import litellm
+from litellm.completion_extras.litellm_responses_transformation.transformation import (
+    LiteLLMResponsesTransformationHandler,
+)
 from litellm.llms.chatgpt.authenticator import Authenticator
 from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 from litellm.llms.openai.common_utils import OpenAIError
@@ -34,6 +38,71 @@ def local_model_cost_map(monkeypatch: pytest.MonkeyPatch) -> Generator[None, Non
 
 
 class TestChatGPTResponsesAPITransformation:
+    @pytest.mark.parametrize(
+        "text_config",
+        [
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "phase_result",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "result": {
+                                "type": "object",
+                                "properties": {"reason": {"type": ["string", "null"]}},
+                                "required": ["reason"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["result"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {"format": {"type": "json_object"}},
+            {"format": {"type": "text"}, "verbosity": "low"},
+        ],
+    )
+    def test_chatgpt_preserves_response_text_config(self, text_config: ResponseTextConfigParam) -> None:
+        request: Final = ChatGPTResponsesAPIConfig().transform_responses_api_request(
+            model="chatgpt/gpt-6.1-sol",
+            input=[{"role": "user", "content": "Return the requested result"}],
+            response_api_optional_request_params={"text": text_config},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["text"] == text_config
+
+    @pytest.mark.parametrize("format_type", ["json_schema", "json_object"])
+    def test_chatgpt_preserves_chat_completion_output_format(self, format_type: str) -> None:
+        schema: Final = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        }
+        text_config: Final = LiteLLMResponsesTransformationHandler().transform_response_format_to_text_format(
+            {"type": "json_schema", "json_schema": {"name": "answer", "strict": True, "schema": schema}}
+            if format_type == "json_schema"
+            else {"type": "json_object"},
+        )
+        request: Final = ChatGPTResponsesAPIConfig().transform_responses_api_request(
+            model="chatgpt/gpt-6.1-sol",
+            input=[{"role": "user", "content": "Return the requested result"}],
+            response_api_optional_request_params={"text": text_config},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["text"] == (
+            {"format": {"type": "json_schema", "name": "answer", "strict": True, "schema": schema}}
+            if format_type == "json_schema"
+            else {"format": {"type": "json_object"}}
+        )
+
     @pytest.mark.parametrize(
         ("requested_tier", "expected_tier"),
         [("default", "default"), ("priority", "priority"), ("fast", "priority")],
