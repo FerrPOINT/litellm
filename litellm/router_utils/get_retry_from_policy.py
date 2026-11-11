@@ -10,6 +10,8 @@ from litellm.exceptions import (
     BadRequestError,
     ContentPolicyViolationError,
     InternalServerError,
+    PaymentRequiredError,
+    PermissionDeniedError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout,
@@ -18,6 +20,8 @@ from litellm.types.router import RetryPolicy
 
 _RETRIES_BY_EXCEPTION_TYPE: Final[Mapping[type, Callable[[RetryPolicy], int | None]]] = MappingProxyType(
     {
+        PaymentRequiredError: lambda policy: policy.PaymentRequiredErrorRetries,
+        PermissionDeniedError: lambda policy: policy.PermissionDeniedErrorRetries,
         AuthenticationError: lambda policy: policy.AuthenticationErrorRetries,
         Timeout: lambda policy: policy.TimeoutErrorRetries,
         RateLimitError: lambda policy: policy.RateLimitErrorRetries,
@@ -29,9 +33,29 @@ _RETRIES_BY_EXCEPTION_TYPE: Final[Mapping[type, Callable[[RetryPolicy], int | No
 )
 
 
-def _retries_for_a_404_answer(exception: Exception, policy: RetryPolicy) -> int | None:
+def _retries_for_http_status(exception: Exception, policy: RetryPolicy) -> int | None:
+    if isinstance(exception, ContentPolicyViolationError):
+        return None
     status_code: Final = getattr(exception, "status_code", None)
-    return policy.NotFoundErrorRetries if status_code == 404 else None
+    match status_code:
+        case 401:
+            return policy.AuthenticationErrorRetries
+        case 402:
+            return policy.PaymentRequiredErrorRetries
+        case 403:
+            return policy.PermissionDeniedErrorRetries
+        case 404:
+            return policy.NotFoundErrorRetries
+        case 408:
+            return policy.TimeoutErrorRetries
+        case 429:
+            return policy.RateLimitErrorRetries
+        case 500 | 502 | 504:
+            return policy.InternalServerErrorRetries
+        case 503:
+            return policy.ServiceUnavailableErrorRetries
+        case _:
+            return None
 
 
 def resolve_retry_policy(
@@ -45,7 +69,7 @@ def resolve_retry_policy(
         else retry_policy
     )
     if isinstance(selected, Mapping):
-        return RetryPolicy(**selected)
+        return RetryPolicy.model_validate(selected)
     return selected
 
 
@@ -55,14 +79,14 @@ def get_num_retries_from_retry_policy(
     model_group: str | None = None,
     model_group_retry_policy: Mapping[str, RetryPolicy | Mapping[str, int | None]] | None = None,
 ) -> int | None:
-    """Prefer NotFoundErrorRetries for any 404 answer, then walk the exception's MRO most specific class first."""
+    """Prefer explicitly configured HTTP status retries, then the exception's most specific class."""
     policy: Final = resolve_retry_policy(retry_policy, model_group, model_group_retry_policy)
     if policy is None:
         return None
     by_class: Final = (
         _RETRIES_BY_EXCEPTION_TYPE[cls](policy) for cls in type(exception).__mro__ if cls in _RETRIES_BY_EXCEPTION_TYPE
     )
-    configured: Final = chain((_retries_for_a_404_answer(exception, policy),), by_class)
+    configured: Final = chain((_retries_for_http_status(exception, policy),), by_class)
     return next((retries for retries in configured if retries is not None), policy.DefaultRetries)
 
 

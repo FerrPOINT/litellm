@@ -160,8 +160,11 @@ class RetryPolicy(LiteLLMBaseModel):
     https://docs.litellm.ai/docs/exception_mapping
     """
 
+    retry_same_deployment: bool = True
+    PaymentRequiredErrorRetries: int | None = None
     BadRequestErrorRetries: int | None = None
     AuthenticationErrorRetries: int | None = None
+    PermissionDeniedErrorRetries: int | None = None
     TimeoutErrorRetries: int | None = None
     RateLimitErrorRetries: int | None = None
     ContentPolicyViolationErrorRetries: int | None = None

@@ -452,6 +452,77 @@ class TestResponseAPILoggingUtils:
             + 2_000 * model_info["cache_creation_input_token_cost_above_12hr"]
         )
 
+    @pytest.mark.parametrize("as_model", [False, True])
+    @pytest.mark.parametrize("cache_read,short_write,long_write", [(17, 4, 5), (0, 0, 0)])
+    def test_provider_cache_details_survive_chat_usage_serialization_and_roundtrip(
+        self, as_model: bool, cache_read: int, short_write: int, long_write: int
+    ) -> None:
+        cache_details: Final = {"ttl_30m_tokens": short_write, "ttl_12h_tokens": long_write}
+        payload: Final = {
+            "input_tokens": 100,
+            "output_tokens": 3,
+            "total_tokens": 103,
+            "input_tokens_details": {
+                "cached_tokens": cache_read,
+                "cache_write_tokens": short_write + long_write,
+                "cache_write_tokens_details": cache_details,
+            },
+            "attribution": {"items": {"fixture": {"cached_tokens": cache_read}}},
+            "provider_counter": 0,
+        }
+        source: Final = ResponseAPIUsage(**payload) if as_model else payload
+        converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(source)
+        wire_details: Final = converted.model_dump()["prompt_tokens_details"]
+        assert wire_details["cached_tokens"] == cache_read
+        assert wire_details["cache_write_tokens"] == short_write + long_write
+        assert wire_details["cache_write_tokens_details"] == cache_details
+        restored_usage: Final = LiteLLMCompletionResponsesConfig.transform_chat_completion_usage_to_responses_usage(
+            Usage(**converted.model_dump())
+        ).model_dump()
+        assert restored_usage["attribution"] == payload["attribution"]
+        assert restored_usage["provider_counter"] == 0
+        restored: Final = restored_usage["input_tokens_details"]
+        assert restored["cached_tokens"] == cache_read
+        assert restored["cache_write_tokens"] == short_write + long_write
+        assert restored["cache_write_tokens_details"] == cache_details
+
+    @pytest.mark.parametrize("cache_read,short_write,long_write", [(17, 4, 5), (0, 0, 0)])
+    def test_provider_constructed_dict_details_keep_cache_metadata(
+        self, cache_read: int, short_write: int, long_write: int
+    ) -> None:
+        details: Final = {
+            "cached_tokens": cache_read,
+            "cache_write_tokens": short_write + long_write,
+            "cache_write_tokens_details": {"ttl_30m_tokens": short_write, "ttl_12h_tokens": long_write},
+        }
+        # SDK-style construction can retain nested wire dictionaries without validation.
+        source: Final = ResponseAPIUsage.model_construct(
+            input_tokens=100, output_tokens=3, total_tokens=103, input_tokens_details=details
+        )
+        converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(source)
+        wire_details: Final = converted.model_dump()["prompt_tokens_details"]
+        assert wire_details["cached_tokens"] == cache_read
+        assert wire_details["cache_write_tokens"] == short_write + long_write
+        assert wire_details["cache_write_tokens_details"] == details["cache_write_tokens_details"]
+        assert wire_details["cache_creation_token_details"]["ephemeral_30m_input_tokens"] == short_write
+        assert wire_details["cache_creation_token_details"]["ephemeral_12h_input_tokens"] == long_write
+        assert source.input_tokens_details is details
+
+    def test_unreported_cache_write_details_are_not_invented(self) -> None:
+        converted: Final = ResponseAPILoggingUtils.transform_response_api_usage_to_chat_usage(
+            {"input_tokens": 100, "output_tokens": 3, "input_tokens_details": {"cached_tokens": 17}}
+        )
+        wire_details: Final = converted.model_dump()["prompt_tokens_details"]
+        assert wire_details["cached_tokens"] == 17
+        assert "cache_write_tokens" not in wire_details
+        assert "cache_write_tokens_details" not in wire_details
+        restored: Final = LiteLLMCompletionResponsesConfig.transform_chat_completion_usage_to_responses_usage(
+            converted
+        ).model_dump()
+        assert "cache_write_tokens_details" not in restored["input_tokens_details"]
+        assert "cache_write_tokens" not in restored["input_tokens_details"]
+        assert "attribution" not in restored
+
     def test_transform_response_api_usage_mixed_details(self):
         """Test transformation handles mixed token details (cached + image + audio)."""
         # Setup - hypothetical usage with mixed token types

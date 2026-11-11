@@ -31,6 +31,125 @@ from litellm.types.utils import (
 )
 
 
+@pytest.mark.parametrize("cached,created", [(17, 9), (0, 0)])
+@pytest.mark.parametrize("partial_final_usage", [False, True])
+def test_stream_chunk_builder_preserves_provider_cache_usage(
+    cached: int, created: int, partial_final_usage: bool
+) -> None:
+    attribution: Final = {"items": {"fixture": {"cached_tokens": cached, "cache_write_tokens": created}}}
+    details: Final = {"ttl_30m_tokens": created, "ttl_12h_tokens": 0}
+    usage: Final = Usage.model_validate(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 3,
+            "total_tokens": 103,
+            "prompt_tokens_details": {
+                "cached_tokens": cached,
+                "cache_write_tokens": created,
+                "cache_write_tokens_details": details,
+            },
+            "attribution": attribution,
+        }
+    )
+    response: Final = stream_chunk_builder(
+        chunks=[
+            ModelResponseStream(
+                model="gpt-4o",
+                choices=[StreamingChoices(index=0, delta=Delta(content="fixture"))],
+                usage=Usage(prompt_tokens=10, completion_tokens=1),
+            ),
+            ModelResponseStream(model="gpt-4o", choices=[], usage=usage),
+            ModelResponseStream(
+                model="gpt-4o",
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=3,
+                    prompt_tokens_details={"cached_tokens": cached, "cache_write_tokens": created},
+                )
+                if partial_final_usage
+                else None,
+            ),
+        ]
+    )
+    assert response is not None
+    result: Final = response.usage.model_dump()
+    assert result["prompt_tokens"] == 100
+    assert result["total_tokens"] == 103
+    assert result["prompt_tokens_details"]["cached_tokens"] == cached
+    assert result["prompt_tokens_details"]["cache_write_tokens_details"] == details
+    assert result["attribution"] == attribution
+    assert usage.model_dump()["attribution"] == attribution
+
+
+@pytest.mark.parametrize("earlier,latest", [(0, 80), (80, 0)])
+@pytest.mark.parametrize("legacy_final", [False, True])
+def test_stream_chunk_builder_keeps_latest_normalized_cache_count(
+    earlier: int, latest: int, legacy_final: bool
+) -> None:
+    response: Final = stream_chunk_builder(
+        chunks=[
+            ModelResponseStream(model="fixture", choices=[], usage=Usage(prompt_cache_hit_tokens=earlier)),
+            ModelResponseStream(
+                model="fixture",
+                choices=[StreamingChoices(index=0, delta=Delta(content="fixture"))],
+                usage=Usage.model_validate(
+                    {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 3,
+                        **(
+                            {"prompt_cache_hit_tokens": latest}
+                            if legacy_final
+                            else {"prompt_tokens_details": {"cached_tokens": latest}}
+                        ),
+                    }
+                ),
+            ),
+        ]
+    )
+    assert response is not None
+    assert response.usage.prompt_tokens_details.cached_tokens == latest
+    assert "prompt_cache_hit_tokens" not in response.usage.model_dump()
+
+
+def test_stream_chunk_builder_keeps_newer_zero_cache_lifetimes() -> None:
+    response = stream_chunk_builder(
+        chunks=[
+            ModelResponseStream(
+                model="fixture",
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=1,
+                    prompt_tokens_details={
+                        "cache_write_tokens": 9,
+                        "cache_write_tokens_details": {"ttl_30m_tokens": 4, "ttl_12h_tokens": 5},
+                    },
+                ),
+            ),
+            ModelResponseStream(
+                model="fixture",
+                choices=[StreamingChoices(index=0, delta=Delta(content="fixture"))],
+                usage=Usage(
+                    prompt_tokens=100,
+                    completion_tokens=3,
+                    prompt_tokens_details={
+                        "cache_write_tokens": 0,
+                        "cache_write_tokens_details": {"ttl_30m_tokens": 0, "ttl_12h_tokens": 0},
+                    },
+                ),
+            ),
+        ]
+    )
+    assert response is not None
+    details = response.usage.prompt_tokens_details
+    assert details.cache_write_tokens == 0
+    assert details.cache_write_tokens_details.ttl_30m_tokens == 0
+    assert details.cache_write_tokens_details.ttl_12h_tokens == 0
+    assert details.cache_creation_token_details.ephemeral_30m_input_tokens == 0
+    assert details.cache_creation_token_details.ephemeral_12h_input_tokens == 0
+
+
 def test_get_combined_tool_content():
     chunks = [
         ModelResponseStream(

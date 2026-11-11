@@ -211,6 +211,14 @@ const menuGroups: MenuGroup[] = [
     groupLabel: "AI GATEWAY",
     items: [
       { key: "home", page: "home", label: "Home", icon: <House {...ICON} /> },
+      {
+        key: "chatgpt-accounts",
+        page: "chatgpt-accounts",
+        route: "chatgpt-accounts",
+        label: "ChatGPT accounts",
+        icon: <KeyRound {...ICON} />,
+        roles: rolesWithWriteAccess,
+      },
       { key: "api-keys", page: "api-keys", label: "Virtual Keys", icon: <KeyRound {...ICON} /> },
       {
         key: "llm-playground",
