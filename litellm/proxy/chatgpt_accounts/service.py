@@ -479,7 +479,7 @@ class AccountService:
         cache: Final = self.router.health().cooldowns
         for template in self.templates:
             if model is None or template.litellm_params.model == model:
-                cache.cooldown_store.delete_cache(cache.get_cooldown_cache_key(deployment_id(account_id, template)))
+                cache.cooldown_store.evict_local(deployment_id(account_id, template))
 
     def clear_recovered_cooldowns(self, model: str | None) -> None:
         for account in self.store.read().accounts:

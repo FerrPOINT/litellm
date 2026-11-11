@@ -140,7 +140,6 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "include",
             "tools",
             "tool_choice",
-            "text",
             "reasoning",
             "previous_response_id",
             "truncation",

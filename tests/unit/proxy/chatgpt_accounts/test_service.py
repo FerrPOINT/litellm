@@ -84,6 +84,22 @@ def account(service: AccountService, label: str = "Personal") -> UUID:
 
 
 @pytest.mark.asyncio
+async def test_rechecking_account_clears_only_its_deployment_cooldowns(service: AccountService) -> None:
+    first: Final = account(service)
+    second: Final = account(service)
+    cooldowns: Final = service.router.health().cooldowns
+    first_ids: Final = tuple(deployment_id(first, template) for template in service.templates)
+    second_ids: Final = tuple(deployment_id(second, template) for template in service.templates)
+    for identifier in (*first_ids, *second_ids):
+        cooldowns.add_deployment_to_cooldown(identifier, RuntimeError("unavailable"), 429, 600)
+    result: Final = await service.check(first)
+    assert isinstance(result, AccountRecord) and result.status == "ready"
+    assert {identifier for identifier, _ in cooldowns.get_active_cooldowns((*first_ids, *second_ids), None)} == set(
+        second_ids
+    )
+
+
+@pytest.mark.asyncio
 async def test_switching_keeps_credentials_and_response_owner(service: AccountService) -> None:
     first: Final = account(service)
     second: Final = account(service)

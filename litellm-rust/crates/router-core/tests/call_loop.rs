@@ -305,15 +305,17 @@ async fn a_bad_request_falls_back_without_retrying(config: RouterConfig) {
 }
 
 #[rstest]
-#[case::quota(429)]
-#[case::authentication(401)]
-#[case::payment(402)]
-#[case::permission(403)]
-#[case::transient(500)]
+#[case::quota(failure(FailureKind::Other, 429))]
+#[case::authentication(failure(FailureKind::Other, 401))]
+#[case::payment(failure(FailureKind::Other, 402))]
+#[case::permission(failure(FailureKind::Other, 403))]
+#[case::transient(failure(FailureKind::Other, 500))]
+#[case::timeout(AttemptError::new(FailureKind::Timeout, None))]
+#[case::connection(AttemptError::new(FailureKind::ApiConnection, None))]
 #[tokio::test]
 async fn account_retry_policy_changes_deployment_without_waiting(
     mut config: RouterConfig,
-    #[case] status: u16,
+    #[case] origin_failure: AttemptError,
 ) {
     config.callback_filters = true;
     config.retry_policy = serde_json::from_value(json!({
@@ -328,7 +330,7 @@ async fn account_retry_policy_changes_deployment_without_waiting(
     .unwrap();
     let host = Arc::new(ScriptedHost {
         first_failure: Mutex::new(Some(
-            failure(FailureKind::Other, status).with_retry_after(Duration::from_secs(60)),
+            origin_failure.with_retry_after(Duration::from_secs(60)),
         )),
         pinned: Some("a1"),
         ..ScriptedHost::default()

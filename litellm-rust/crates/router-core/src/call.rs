@@ -1050,8 +1050,11 @@ impl Core {
             {
                 inputs.failed_ids.push(id.clone());
             }
-            if let (Some(status), Some(id)) = (failure.status, failed_on)
-                && (!retry_same_deployment || !should_retry_status(status))
+            if let Some(id) = failed_on
+                && (!retry_same_deployment
+                    || failure
+                        .status
+                        .is_some_and(|status| !should_retry_status(status)))
                 && !inputs.skipped_ids.contains(id)
             {
                 inputs.skipped_ids.push(id.clone());
