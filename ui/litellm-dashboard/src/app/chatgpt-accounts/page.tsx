@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import Link from "next/link";
+import { Trans, useTranslation } from "react-i18next";
 import { $api, fetchClient } from "@/lib/http/api";
 import { ApiError } from "@/lib/http/client";
 import type { components } from "@/lib/http/schema";
@@ -14,7 +15,7 @@ type View = components["schemas"]["AccountsView"];
 type Account = components["schemas"]["AccountRecord"];
 type Login = components["schemas"]["LoginView"];
 
-const message = (error: unknown) => (error instanceof Error ? error.message : "Operation failed");
+const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
 const selectClass = "w-full rounded-md border bg-background p-2 text-sm";
 
 function Assignments({
@@ -26,17 +27,15 @@ function Assignments({
   run: (action: () => Promise<unknown>) => void;
   busy: boolean;
 }) {
+  const { t } = useTranslation();
   const [primary, setPrimary] = useState(view.bindings?.default_account_id ?? "");
   const [automatic, setAutomatic] = useState(view.bindings?.automatic_failover ?? false);
   const [routes, setRoutes] = useState<Record<string, string | null>>(view.bindings?.routes ?? {});
   const options = view.accounts.filter((account) => account.enabled);
   return (
-    <section className="space-y-4 rounded-lg border p-5" aria-label="Account assignments">
-      <h2 className="text-lg font-semibold">Account assignments</h2>
-      <p className="text-sm text-muted-foreground">
-        Changes apply to new requests. Existing streams and Responses continuations keep their account. Activation
-        checks every affected model.
-      </p>
+    <section className="space-y-4 rounded-lg border p-5" aria-label={t("chatgptAccounts.assignmentsTitle")}>
+      <h2 className="text-lg font-semibold">{t("chatgptAccounts.assignmentsTitle")}</h2>
+      <p className="text-sm text-muted-foreground">{t("chatgptAccounts.assignmentsHelp")}</p>
       <form
         className="space-y-4"
         onSubmit={(event) => {
@@ -53,33 +52,32 @@ function Assignments({
       >
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={automatic} onChange={(event) => setAutomatic(event.target.checked)} />
-          Automatically switch ChatGPT accounts when unavailable
+          {t("chatgptAccounts.automaticFailover")}
         </label>
-        <p className="text-sm text-muted-foreground">
-          A failed account is skipped until its retry time or a successful access check. New requests keep using the
-          working account. Each account is attempted at most once per request.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("chatgptAccounts.automaticHelp")}</p>
         {Object.entries(view.active_accounts ?? {}).map(([scope, id]) => {
           const selected = view.accounts.find((account) => account.id === id);
           const change = view.last_switches?.[scope];
+          const switchDetails = change && {
+            previous: view.accounts.find((account) => account.id === change.previous)?.label ?? change.previous,
+            current: selected?.label ?? id,
+            reason: change.reason,
+            time: new Date(change.at * 1000).toLocaleString(),
+          };
           return (
             <div key={scope} className="rounded border p-3 text-sm" role="status">
               <p>
-                {scope === "default" ? "Hub current account" : scope}: {selected?.label ?? id} · {id.slice(0, 8)}
+                {scope === "default" ? t("chatgptAccounts.currentAccount") : scope}: {selected?.label ?? id} ·{" "}
+                {id.slice(0, 8)}
               </p>
-              {change && (
-                <p className="text-muted-foreground">
-                  Last switch:{" "}
-                  {view.accounts.find((account) => account.id === change.previous)?.label ?? change.previous}
-                  {" -> "}
-                  {selected?.label ?? id}. Reason: {change.reason}. {new Date(change.at * 1000).toLocaleString()}
-                </p>
+              {switchDetails && (
+                <p className="text-muted-foreground">{t("chatgptAccounts.lastSwitch", switchDetails)}</p>
               )}
             </div>
           );
         })}
         <div>
-          <Label htmlFor="primary-account">Hub default</Label>
+          <Label htmlFor="primary-account">{t("chatgptAccounts.hubDefault")}</Label>
           <select
             id="primary-account"
             className={selectClass}
@@ -87,10 +85,10 @@ function Assignments({
             onChange={(event) => setPrimary(event.target.value)}
             required
           >
-            <option value="">Select account</option>
+            <option value="">{t("chatgptAccounts.selectAccount")}</option>
             {options.map((account) => (
               <option key={account.id} value={account.id}>
-                {account.label} · {account.email ?? "No email"} · {account.id.slice(0, 8)}
+                {account.label} · {account.email ?? t("chatgptAccounts.noEmail")} · {account.id.slice(0, 8)}
               </option>
             ))}
           </select>
@@ -100,7 +98,8 @@ function Assignments({
           .map((route) => (
             <div key={route.name}>
               <Label htmlFor={`route-${route.name}`}>
-                {route.name} · {route.model} · {route.context_length?.toLocaleString() ?? "Provider context"}
+                {route.name} · {route.model} ·{" "}
+                {route.context_length?.toLocaleString() ?? t("chatgptAccounts.providerContext")}
               </Label>
               <select
                 id={`route-${route.name}`}
@@ -108,17 +107,17 @@ function Assignments({
                 value={routes[route.name] ?? ""}
                 onChange={(event) => setRoutes({ ...routes, [route.name]: event.target.value || null })}
               >
-                <option value="">Inherit hub default</option>
+                <option value="">{t("chatgptAccounts.inheritDefault")}</option>
                 {options.map((account) => (
                   <option key={account.id} value={account.id}>
-                    {account.label} · {account.email ?? "No email"} · {account.id.slice(0, 8)}
+                    {account.label} · {account.email ?? t("chatgptAccounts.noEmail")} · {account.id.slice(0, 8)}
                   </option>
                 ))}
               </select>
             </div>
           ))}
         <Button type="submit" disabled={busy || !primary}>
-          Verify and apply
+          {t("chatgptAccounts.verifyApply")}
         </Button>
       </form>
     </section>
@@ -138,37 +137,53 @@ function AccountRow({
   login: (label: string, id?: string) => void;
   busy: boolean;
 }) {
+  const { t } = useTranslation();
   const [label, setLabel] = useState(account.label);
   return (
-    <article className="space-y-3 rounded-lg border p-4" aria-label={`Account ${account.label}`}>
+    <article
+      className="space-y-3 rounded-lg border p-4"
+      aria-label={t("chatgptAccounts.accountLabel", { label: account.label })}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold">{account.label}</h3>
-          <p className="text-sm">{account.email ?? "Email unavailable"}</p>
-          <p className="text-xs text-muted-foreground break-all">Profile {account.id}</p>
+          <p className="text-sm">{account.email ?? t("chatgptAccounts.emailUnavailable")}</p>
+          <p className="text-xs text-muted-foreground break-all">{t("chatgptAccounts.profile", { id: account.id })}</p>
         </div>
         <strong className="text-sm">{account.status}</strong>
       </div>
-      <p className="text-sm">Assigned: {assigned.join(", ") || "None"}</p>
+      <p className="text-sm">
+        {t("chatgptAccounts.assigned", { assignments: assigned.join(", ") || t("chatgptAccounts.none") })}
+      </p>
       {Object.entries(account.deployment_outages ?? {}).map(([model, outage]) => (
         <p key={model} className="text-sm text-muted-foreground">
-          {model}: {outage.reason}. {outage.retry_at ? "Provider retry" : "Local retry"}{" "}
-          {outage.until ? new Date(outage.until * 1000).toLocaleString() : "Unavailable"}
+          {model}: {outage.reason}.{" "}
+          {outage.retry_at ? t("chatgptAccounts.providerRetry") : t("chatgptAccounts.localRetry")}{" "}
+          {outage.until ? new Date(outage.until * 1000).toLocaleString() : t("chatgptAccounts.unavailable")}
         </p>
       ))}
       <p className="text-sm text-muted-foreground">
-        Last check: {account.last_checked_at ? new Date(account.last_checked_at * 1000).toLocaleString() : "Never"}.
-        Provider retry time: {account.retry_at ? new Date(account.retry_at * 1000).toLocaleString() : "Unavailable"}.
-        Local retry:{" "}
-        {account.unavailable_until ? new Date(account.unavailable_until * 1000).toLocaleString() : "Not scheduled"}
+        {t("chatgptAccounts.checkHistory", {
+          lastCheck: account.last_checked_at
+            ? new Date(account.last_checked_at * 1000).toLocaleString()
+            : t("chatgptAccounts.never"),
+          providerRetry: account.retry_at
+            ? new Date(account.retry_at * 1000).toLocaleString()
+            : t("chatgptAccounts.unavailable"),
+          localRetry: account.unavailable_until
+            ? new Date(account.unavailable_until * 1000).toLocaleString()
+            : t("chatgptAccounts.notScheduled"),
+        })}
       </p>
       {account.error_code && <p role="status">{account.error_code}</p>}
-      <p className="text-sm text-muted-foreground">Quota, reset, subscription expiry and credits: unavailable</p>
+      <p className="text-sm text-muted-foreground">{t("chatgptAccounts.limitsUnavailable")}</p>
       <details>
-        <summary className="cursor-pointer text-sm">Available models and OAuth client</summary>
-        <p className="text-xs break-all">{account.models?.join(", ") || "Not checked"}</p>
-        <p className="text-xs break-all">OAuth client: {account.client_id}</p>
-        <p className="text-xs break-all">Workspace: {account.workspace ?? "Unavailable"}</p>
+        <summary className="cursor-pointer text-sm">{t("chatgptAccounts.modelDetails")}</summary>
+        <p className="text-xs break-all">{account.models?.join(", ") || t("chatgptAccounts.notChecked")}</p>
+        <p className="text-xs break-all">{t("chatgptAccounts.oauthClient", { clientId: account.client_id })}</p>
+        <p className="text-xs break-all">
+          {t("chatgptAccounts.workspace", { workspace: account.workspace ?? t("chatgptAccounts.unavailable") })}
+        </p>
       </details>
       <form
         className="flex gap-2"
@@ -183,7 +198,7 @@ function AccountRow({
         }}
       >
         <Label className="sr-only" htmlFor={`label-${account.id}`}>
-          Label for {account.label}
+          {t("chatgptAccounts.labelFor", { label: account.label })}
         </Label>
         <Input
           id={`label-${account.id}`}
@@ -193,7 +208,7 @@ function AccountRow({
           onChange={(event) => setLabel(event.target.value)}
         />
         <Button variant="outline" type="submit" disabled={busy}>
-          Rename
+          {t("chatgptAccounts.rename")}
         </Button>
       </form>
       <div className="flex flex-wrap gap-2">
@@ -208,10 +223,10 @@ function AccountRow({
             )
           }
         >
-          Check access
+          {t("chatgptAccounts.checkAccess")}
         </Button>
         <Button variant="outline" disabled={busy} onClick={() => login(account.label, account.id)}>
-          Sign in again
+          {t("chatgptAccounts.signInAgain")}
         </Button>
         <Button
           variant="outline"
@@ -224,12 +239,10 @@ function AccountRow({
             )
           }
         >
-          Disconnect
+          {t("chatgptAccounts.disconnect")}
         </Button>
       </div>
-      {assigned.length > 0 && (
-        <p className="text-xs text-muted-foreground">Reassign this account before disconnecting.</p>
-      )}
+      {assigned.length > 0 && <p className="text-xs text-muted-foreground">{t("chatgptAccounts.reassignRequired")}</p>}
     </article>
   );
 }
@@ -243,6 +256,7 @@ function DeviceLogin({
   run: (action: () => Promise<unknown>) => void;
   done: () => void;
 }) {
+  const { t } = useTranslation();
   const query = $api.useQuery(
     "get",
     "/chatgpt/accounts/logins/{login_id}",
@@ -251,19 +265,22 @@ function DeviceLogin({
   );
   const current = query.data ?? operation;
   return (
-    <section className="space-y-3 rounded-lg border border-blue-400 p-5" aria-label="ChatGPT sign-in">
-      <h2 className="font-semibold">ChatGPT sign-in: {current.status}</h2>
+    <section className="space-y-3 rounded-lg border border-blue-400 p-5" aria-label={t("chatgptAccounts.signInLabel")}>
+      <h2 className="font-semibold">{t("chatgptAccounts.signInStatus", { status: current.status })}</h2>
       {current.status === "pending" ? (
         <>
           <p>
-            Open{" "}
-            <a className="underline" href={current.verification_url} target="_blank" rel="noopener noreferrer">
-              ChatGPT device authorization
-            </a>{" "}
-            and enter:
+            <Trans
+              i18nKey="chatgptAccounts.deviceInstructions"
+              components={{
+                authorize: (
+                  <a className="underline" href={current.verification_url} target="_blank" rel="noopener noreferrer" />
+                ),
+              }}
+            />
           </p>
           <p className="font-mono text-2xl">{current.user_code}</p>
-          <p>Expires {new Date(current.expires_at * 1000).toLocaleTimeString()}. Your current account stays active.</p>
+          <p>{t("chatgptAccounts.expiresHelp", { time: new Date(current.expires_at * 1000).toLocaleTimeString() })}</p>
           <Button
             variant="outline"
             onClick={() =>
@@ -274,25 +291,26 @@ function DeviceLogin({
               )
             }
           >
-            Cancel sign-in
+            {t("chatgptAccounts.cancelSignIn")}
           </Button>
         </>
       ) : (
         <>
           <p role="status">
             {current.status === "ready"
-              ? "Account verified. Select it in account assignments."
-              : current.error_code ?? "Sign-in was not completed."}
+              ? t("chatgptAccounts.verified")
+              : current.error_code ?? t("chatgptAccounts.loginIncomplete")}
           </p>
-          <Button onClick={done}>Close and refresh accounts</Button>
+          <Button onClick={done}>{t("chatgptAccounts.closeRefresh")}</Button>
         </>
       )}
-      {query.error && <p role="alert">{message(query.error)}</p>}
+      {query.error && <p role="alert">{message(query.error, t("chatgptAccounts.operationFailed"))}</p>}
     </section>
   );
 }
 
 export default function ChatGPTAccountsPage() {
+  const { t } = useTranslation();
   const client = useQueryClient();
   const [key, setKey] = useState("");
   const [label, setLabel] = useState("");
@@ -316,16 +334,14 @@ export default function ChatGPTAccountsPage() {
     <main className="mx-auto max-w-5xl space-y-6 p-6 md:p-10">
       <header>
         <Link href="/ui/" className="text-sm underline">
-          LiteLLM Dashboard
+          {t("chatgptAccounts.dashboard")}
         </Link>
-        <h1 className="mt-4 text-3xl font-semibold">ChatGPT accounts</h1>
-        <p className="mt-2 text-muted-foreground">
-          Connect separate accounts, choose a preferred account, and enable automatic failover when needed.
-        </p>
+        <h1 className="mt-4 text-3xl font-semibold">{t("shell.nav.items.chatgptAccounts")}</h1>
+        <p className="mt-2 text-muted-foreground">{t("chatgptAccounts.pageHelp")}</p>
       </header>
       {mutation.error && (
         <p role="alert" className="rounded border border-red-400 p-3">
-          {message(mutation.error)}
+          {message(mutation.error, t("chatgptAccounts.operationFailed"))}
         </p>
       )}
       {unauthorized && (
@@ -339,8 +355,8 @@ export default function ChatGPTAccountsPage() {
             });
           }}
         >
-          <h2 className="font-semibold">Administrator sign-in</h2>
-          <Label htmlFor="admin-key">Account management key</Label>
+          <h2 className="font-semibold">{t("chatgptAccounts.adminSignIn")}</h2>
+          <Label htmlFor="admin-key">{t("chatgptAccounts.adminKey")}</Label>
           <Input
             id="admin-key"
             type="password"
@@ -349,24 +365,24 @@ export default function ChatGPTAccountsPage() {
             required
             onChange={(event) => setKey(event.target.value)}
           />
-          <p className="text-sm text-muted-foreground">
-            The inference key cannot manage accounts. This session lasts one hour.
-          </p>
+          <p className="text-sm text-muted-foreground">{t("chatgptAccounts.adminSessionHelp")}</p>
           <Button type="submit" disabled={mutation.isPending}>
-            Sign in
+            {t("chatgptAccounts.signIn")}
           </Button>
         </form>
       )}
-      {accounts.isPending && <p role="status">Loading accounts…</p>}
-      {Boolean(accountsError) && !unauthorized && <p role="alert">{message(accounts.error)}</p>}
+      {accounts.isPending && <p role="status">{t("chatgptAccounts.loading")}</p>}
+      {Boolean(accountsError) && !unauthorized && (
+        <p role="alert">{message(accounts.error, t("chatgptAccounts.operationFailed"))}</p>
+      )}
       {accounts.data && !unauthorized && (
         <>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => run(() => fetchClient.DELETE("/chatgpt/accounts/session"))}>
-              Sign out
+              {t("chatgptAccounts.signOut")}
             </Button>
             <Button variant="outline" onClick={() => void accounts.refetch()}>
-              Refresh
+              {t("chatgptAccounts.refresh")}
             </Button>
           </div>
           <form
@@ -377,10 +393,10 @@ export default function ChatGPTAccountsPage() {
             }}
           >
             <div className="grow space-y-2">
-              <Label htmlFor="new-account-label">New account label</Label>
+              <Label htmlFor="new-account-label">{t("chatgptAccounts.newLabel")}</Label>
               <Input
                 id="new-account-label"
-                placeholder="Personal or Work"
+                placeholder={t("chatgptAccounts.labelPlaceholder")}
                 maxLength={120}
                 value={label}
                 required
@@ -388,7 +404,7 @@ export default function ChatGPTAccountsPage() {
               />
             </div>
             <Button type="submit" disabled={mutation.isPending || operation?.status === "pending"}>
-              Add ChatGPT account
+              {t("chatgptAccounts.addAccount")}
             </Button>
           </form>
           {operation && (
@@ -402,17 +418,19 @@ export default function ChatGPTAccountsPage() {
             />
           )}
           <Assignments key={accounts.data.revision} view={accounts.data} run={run} busy={mutation.isPending} />
-          <section className="grid gap-4 md:grid-cols-2" aria-label="Connected accounts">
-            {accounts.data.accounts.length === 0 && <p>No ChatGPT accounts connected yet.</p>}
+          <section className="grid gap-4 md:grid-cols-2" aria-label={t("chatgptAccounts.connectedLabel")}>
+            {accounts.data.accounts.length === 0 && <p>{t("chatgptAccounts.noAccounts")}</p>}
             {accounts.data.accounts.map((account) => (
               <AccountRow
                 key={`${account.id}-${account.label}`}
                 account={account}
                 assigned={[
-                  ...(accounts.data.bindings?.default_account_id === account.id ? ["Hub default"] : []),
+                  ...(accounts.data.bindings?.default_account_id === account.id
+                    ? [t("chatgptAccounts.hubDefault")]
+                    : []),
                   ...Object.entries(accounts.data.active_accounts ?? {})
                     .filter(([, id]) => id === account.id)
-                    .map(([scope]) => `Active ${scope}`),
+                    .map(([scope]) => t("chatgptAccounts.activeScope", { scope })),
                   ...accounts.data.routes
                     .filter(
                       (route) =>
