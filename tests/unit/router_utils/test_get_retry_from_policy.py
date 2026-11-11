@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 import litellm
-from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy
+from litellm.litellm_core_utils.get_retry_from_policy import get_num_retries_from_retry_policy
 from litellm.types.router import RetryPolicy
 
 _EXCEPTION_FOR_FIELD: Final = MappingProxyType(
@@ -98,6 +98,18 @@ def test_payment_required_error_uses_bad_request_retries():
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("default_retries", (None, 0, 3))
+@pytest.mark.parametrize("bad_request_retries", (0, 5))
+def test_unsupported_endpoint_preserves_the_connection_error_retry_budget(
+    default_retries: int | None, bad_request_retries: int
+) -> None:
+    policy: Final = RetryPolicy(BadRequestErrorRetries=bad_request_retries, DefaultRetries=default_retries)
+
+    assert get_num_retries_from_retry_policy(
+        exception=_error(litellm.UnsupportedEndpointError), retry_policy=policy
+    ) == get_num_retries_from_retry_policy(exception=_error(litellm.APIConnectionError), retry_policy=policy)
 
 
 @pytest.mark.parametrize("exception_type", (litellm.BadGatewayError,))
@@ -255,3 +267,18 @@ def test_explicit_status_policy_handles_provider_errors_mapped_as_bad_requests(s
     )
     assert get_num_retries_from_retry_policy(exception, RetryPolicy(**{field: 1, "BadRequestErrorRetries": 0})) == 1
     assert get_num_retries_from_retry_policy(exception, RetryPolicy(BadRequestErrorRetries=0)) == 0
+
+
+@pytest.mark.parametrize(
+    "exception,expected",
+    [
+        (litellm.BadGatewayError(message="fixture", llm_provider="openai", model="fixture"), 9),
+        (
+            litellm.Timeout(message="fixture", llm_provider="openai", model="fixture", exception_status_code=504),
+            3,
+        ),
+    ],
+)
+def test_gateway_failures_preserve_their_distinct_retry_policies(exception: Exception, expected: int) -> None:
+    policy: Final = RetryPolicy(DefaultRetries=9, InternalServerErrorRetries=2, TimeoutErrorRetries=3)
+    assert get_num_retries_from_retry_policy(exception, policy) == expected

@@ -13,6 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +22,11 @@ const repoRoot = resolve(dashboardDir, "..", "..");
 const outPath = join(dashboardDir, "src", "lib", "http", "schema.d.ts");
 const specDir = mkdtempSync(join(tmpdir(), "litellm-openapi-"));
 const specPath = join(specDir, "openapi.json");
+const typescriptCli = join(
+  dirname(createRequire(import.meta.url).resolve("openapi-typescript/package.json")),
+  "bin",
+  "cli.js",
+);
 
 const python = (process.env.LITELLM_PYTHON ?? "python3").split(" ");
 // The dashboard calls internal UI routes that the public /openapi.json hides via
@@ -54,7 +60,7 @@ try {
     stdio: "inherit",
   });
 
-  execFileSync(join(dashboardDir, "node_modules", ".bin", "openapi-typescript"), [specPath, "-o", outPath], {
+  execFileSync(process.execPath, [typescriptCli, specPath, "-o", outPath], {
     cwd: dashboardDir,
     stdio: "inherit",
   });

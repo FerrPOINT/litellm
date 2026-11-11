@@ -30,9 +30,6 @@ const nextConfig = {
     : {}),
   output: devProxyUrl ? undefined : "export",
   typescript: { tsconfigPath: "tsconfig.production.json" },
-  experimental: {
-    useTypeScriptCli: false,
-  },
   compiler: {
     removeConsole: process.env.NODE_ENV === "production" ? { exclude: ["error", "warn"] } : false,
   },

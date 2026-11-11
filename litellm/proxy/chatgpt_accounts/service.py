@@ -16,6 +16,7 @@ from litellm.llms.chatgpt.authenticator import get_cached_authenticator
 from litellm.llms.chatgpt.common_utils import GetAccessTokenError, get_chatgpt_default_headers
 from litellm.responses.utils import ResponsesAPIRequestUtils
 from litellm.router import Router
+from litellm.router_api import ChangeSet
 from litellm.types.router import Deployment
 
 from .availability import AccountOutage, available, next_attempt
@@ -141,7 +142,7 @@ class AccountService:
         self.probe = probe
         self.templates = tuple(
             item
-            for item in TypeAdapter(tuple[Deployment, ...]).validate_python(router.get_model_list() or ())
+            for item in TypeAdapter(tuple[Deployment, ...]).validate_python(router.registry().deployments() or ())
             if self.is_template(item)
         )
         self.register_deployments(self.store.read())
@@ -173,8 +174,9 @@ class AccountService:
 
     def register_deployments(self, state: AccountsState) -> None:
         for account in state.accounts:
-            for template in self.templates:
-                self.router.add_deployment(self.account_deployment(account, template))
+            self.router.apply(
+                ChangeSet(upsert=tuple(self.account_deployment(account, template) for template in self.templates))
+            )
 
     def routes(self) -> tuple[str, ...]:
         return tuple(template.model_name for template in self.templates)
@@ -474,10 +476,10 @@ class AccountService:
             )
 
     def clear_cooldowns(self, account_id: UUID, model: str | None = None) -> None:
-        cache: Final = self.router.cooldown_cache
+        cache: Final = self.router.health().cooldowns
         for template in self.templates:
             if model is None or template.litellm_params.model == model:
-                cache.cooldown_store.delete_cache(cache.get_cooldown_cache_key(deployment_id(account_id, template)))
+                cache.cooldown_store.evict_local(deployment_id(account_id, template))
 
     def clear_recovered_cooldowns(self, model: str | None) -> None:
         for account in self.store.read().accounts:

@@ -4,6 +4,7 @@ from litellm.litellm_core_utils.initialize_dynamic_callback_params import valida
 from litellm.types.utils import (
     CAPTURE_MESSAGE_CONTENT_VALUES,
     CacheCreationTokenDetails,
+    CallTypes,
     CaptureMessageContent,
     PromptTokensDetailsWrapper,
     Usage,
@@ -103,3 +104,8 @@ def test_capture_message_content_constructor_accepts_any_string() -> None:
 )
 def test_captures_span_content(mode: str | None, captures: bool) -> None:
     assert captures_span_content(mode) is captures
+
+
+@pytest.mark.parametrize("call_type", ["compact_responses", "acompact_responses"])
+def test_responses_compact_call_types_round_trip_their_public_names(call_type: str) -> None:
+    assert CallTypes(call_type).value == call_type
