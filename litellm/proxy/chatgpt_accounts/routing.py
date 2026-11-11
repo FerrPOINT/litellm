@@ -71,7 +71,7 @@ class AccountsRoutingHook(CustomLogger):
         if not isinstance(model, str):
             return None
         if model not in self.service.routes():
-            deployment: Final = self.service.router.get_deployment(model_id=model)
+            deployment: Final = self.service.router.registry().deployment(model)
             if model.startswith("chatgpt/") or (deployment and deployment.litellm_params.model.startswith("chatgpt/")):
                 raise HTTPException(
                     400, detail={"code": "managed_route_required", "message": "Choose a configured ChatGPT route."}

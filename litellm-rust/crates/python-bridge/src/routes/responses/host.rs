@@ -1,3 +1,4 @@
+use litellm_core_utils::decline::Decline;
 use std::convert::Infallible;
 
 use crate::routes::inference::InferenceHost;
@@ -43,12 +44,9 @@ pub(super) fn project(
             let value = match (name.as_str(), value) {
                 ("previous_response_id", serde_json::Value::String(id)) => {
                     let decoded: String = py
-                        .import("litellm.responses.utils")?
-                        .getattr("ResponsesAPIRequestUtils")?
-                        .call_method1(
-                            "decode_previous_response_id_to_original_previous_response_id",
-                            (id,),
-                        )?
+                        .import(super::ROUTE_HOST_MODULE)?
+                        .getattr("original_previous_response_id")?
+                        .call1((id,))?
                         .extract()?;
                     serde_json::Value::String(decoded)
                 }
@@ -118,9 +116,9 @@ impl PythonBinding for ResponsesPythonHost {
             .get("stream")
             .is_some_and(|value| value == &serde_json::Value::Bool(true))
         {
-            return Err(InvokeError::Native(Error::Unsupported(
+            return Err(InvokeError::Native(Error::Declined(Decline::new(
                 "native Python responses streaming",
-            )));
+            ))));
         }
         Ok(call)
     }
@@ -141,8 +139,10 @@ impl PythonBinding for ResponsesPythonHost {
         head: <Responses as litellm_host::protocol::Protocol>::StreamHead,
     ) -> PyResult<Py<PyAny>> {
         let _ = head;
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "native Python Responses streaming is not supported",
+        Err(crate::errors::route_error_to_pyerr(
+            Error::invalid_response(litellm_llms::ErrorDetail::Unhandled(
+                "native Python responses streaming",
+            )),
         ))
     }
 
@@ -152,8 +152,10 @@ impl PythonBinding for ResponsesPythonHost {
         chunk: <Responses as litellm_host::protocol::Protocol>::Chunk,
     ) -> PyResult<Py<PyAny>> {
         let _ = chunk;
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "native Python Responses streaming is not supported",
+        Err(crate::errors::route_error_to_pyerr(
+            Error::invalid_response(litellm_llms::ErrorDetail::Unhandled(
+                "native Python responses streaming",
+            )),
         ))
     }
 
@@ -161,7 +163,7 @@ impl PythonBinding for ResponsesPythonHost {
         self.host.error(py, error)
     }
     fn host_error(error: &PyErr) -> Error {
-        Error::InvalidRequest(error.to_string().into())
+        crate::routes::inference::host_call_error(error)
     }
 }
 

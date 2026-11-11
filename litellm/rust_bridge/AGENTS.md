@@ -9,7 +9,7 @@
   - provider execution, which is Rust core
   - CPython runtime mechanics, which is `litellm-host-python`
   - legacy callback sharing and dispatch policy, which is `callbacks-legacy-python`
-- `host/` holds the modules Rust imports by name to read Python-owned state. `host/AGENTS.md` states that contract
+- `host/` holds the modules Rust imports by name to reach Python-owned state and behavior. Only Rust calls them, and Rust reaches Python nowhere else. `host/AGENTS.md` states that contract
 
 # Routing
 
@@ -45,6 +45,12 @@
 - Native admission may pick Python before execution starts
 - A failure after execution starts is terminal and never triggers fallback
 - Creating an unstarted native coroutine acquires no clients or credentials and captures no execution context
+
+# Native extension
+
+- `_native` ships in every wheel and the sdist builds it, so it is always importable
+- Import it with `from litellm.rust_bridge import _native` and use the attributes `_native.pyi` declares
+- Never add a `None` branch, `getattr` default or stand-in class for a missing extension
 
 # Verification
 
