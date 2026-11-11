@@ -41,8 +41,8 @@ Quota reset timestamps from error payloads and exhausted Codex header windows ar
 Header names follow the [Codex rate-limit parser](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/rate_limits.rs), checked on 2026-10-28
 A failed reserve does not prevent manually assigning a working account
 Invalid requests do not rotate, and a partial stream is never replayed on another account
-The complete inference request has a 600-second deadline, including retries and streaming
-`LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT` can shorten that deadline but cannot increase it
+The complete inference request uses `LITELLM_CHATGPT_ACCOUNTS_REQUEST_TIMEOUT`, including retries and streaming
+When unset, it uses the SDK default request timeout. Set a positive finite number of seconds to override it
 When every account is unavailable, the proxy returns a clear `503` with Retry-After only when a retry time is known
 This includes the first request that exhausts the remaining accounts, using the earliest account retry time
 An invalid request keeps its original error even if other concurrent requests exhausted the accounts
